@@ -58,6 +58,12 @@ Browse archived files and selectively extract Unity packages without unpacking t
 
 Choose a pre-release from **[GitHub Releases](https://github.com/ShxwZ/SZKura/releases)**. New releases include both **Windows x64** and **Linux x64** binaries.
 
+### Publishing new prereleases (maintainers)
+
+To publish a version, open **[GitHub Actions](https://github.com/ShxwZ/SZKura/actions/workflows/build-release.yml) → Build, test and publish → Run workflow**, and select `main`. The workflow automatically finds the highest existing `v0.1.0-alpha.N` tag, increments `N` by one, builds and tests Windows and Linux, embeds that version in SZKura, and publishes the executables together under the new tag. Pushing code to `main` also triggers a release after successful tests.
+
+Do **not** use GitHub's **Draft a new release** page to compile SZKura: that page creates a release and tag but cannot rebuild the application or automatically increment its embedded version. The base `Cargo.toml` version remains `0.1.0` while the alpha build number changes for each release.
+
 ### Windows
 
 1. Download `SZKura-win-x64.exe` from the most recent release.

@@ -10,8 +10,41 @@ on:
 permissions:
   contents: read
 
+# Serialize releases so two manual/push runs cannot choose the same tag.
+concurrency:
+  group: szkura-build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  version:
+    name: Allocate next SZKura prerelease version
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+    steps:
+      - name: Select next unused numeric tag
+        id: next
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Include tags made in GitHub's release UI, not just Actions runs.
+          refs="$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v0.1.0-alpha." --paginate --jq '.[].ref')"
+          max=10000
+          while IFS= read -r ref; do
+            if [[ "$ref" =~ ^refs/tags/v0[.]1[.]0-alpha[.]([0-9]+)$ ]]; then
+              candidate="${BASH_REMATCH[1]}"
+              number=$((10#$candidate))
+              if (( number > max )); then max=$number; fi
+            fi
+          done <<< "$refs"
+          tag="v0.1.0-alpha.$((max + 1))"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Building and publishing **$tag**" >> "$GITHUB_STEP_SUMMARY"
+
   verify:
+    needs: version
     name: Rust test + release (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -33,7 +66,7 @@ jobs:
         run: cargo test --all-targets
       - name: Full optimized binary compilation
         env:
-          SZKURA_BUILD_TAG: v0.1.0-alpha.1000${{ github.run_number }}
+          SZKURA_BUILD_TAG: ${{ needs.version.outputs.tag }}
         run: cargo build --release
       - name: Windows executable artifact
         if: runner.os == 'Windows'
@@ -52,8 +85,8 @@ jobs:
 
   release:
     name: Publish SZKura Windows + Linux prerelease
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: verify
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    needs: [version, verify]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -72,7 +105,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="v0.1.0-alpha.1000${{ github.run_number }}"
+          tag="${{ needs.version.outputs.tag }}"
           test -s dist/windows/szkura.exe
           test -s dist/linux/szkura
           gh release create "$tag" \
