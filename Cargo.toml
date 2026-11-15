@@ -1,0 +1,53 @@
+[package]
+name = "szkura"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "SZKura: a local BOOTH and VRChat asset library manager for Windows and Linux"
+repository = "https://github.com/ShxwZ/SZKura"
+
+[lib]
+name = "szkura"
+path = "src/lib.rs"
+
+[[bin]]
+name = "szkura"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+directories = "6"
+eframe = { version = "=0.33.3", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Lossy WebP encoding for newly downloaded BOOTH covers; libwebp is built from source.
+webp = "=0.3.1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = "0.10"
+self-replace = "1.5.1"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+scraper = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+tempfile = "3"
+trash = "5"
+walkdir = "2"
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
+sevenz-rust2 = { version = "=0.25.0", default-features = false }
+# Pure Rust, read-only RAR4/RAR5 decoder (no WinRAR/unrar installation).
+rars = { version = "=0.12.4", default-features = false }
+crc32fast = "1"
+
+
+[dev-dependencies]
+sevenz-rust2 = { version = "=0.25.0", features = ["compress"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation"] }

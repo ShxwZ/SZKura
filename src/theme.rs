@@ -1,0 +1,123 @@
+//! Runtime UI palettes, shared by native egui styling and custom buttons.
+//! A small atomic selection avoids rebuilding every widget or editing existing data.
+use eframe::egui::Color32;
+use std::sync::atomic::{AtomicU8,Ordering};
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+#[repr(u8)]
+pub enum ThemeKind { Graphite=0, Sage=1, Purple=2, Orange=3 }
+
+impl ThemeKind {
+    pub const ALL:[Self;4]=[Self::Graphite,Self::Sage,Self::Purple,Self::Orange];
+    pub fn id(self)->&'static str {
+        match self {
+            Self::Graphite=>"graphite",Self::Sage=>"sage",
+            Self::Purple=>"purple",Self::Orange=>"orange"
+        }
+    }
+    pub fn label(self)->&'static str {
+        match self {
+            Self::Graphite=>"Ónix",Self::Sage=>"Jade",
+            Self::Purple=>"Amatista",Self::Orange=>"Ámbar"
+        }
+    }
+    pub fn from_id(id:&str)->Option<Self>{
+        Self::ALL.into_iter().find(|kind|kind.id()==id)
+    }
+}
+
+#[derive(Clone,Copy)]
+pub struct Palette {
+    pub bg:Color32, pub panel:Color32, pub card:Color32,
+    pub stroke:Color32, pub text:Color32, pub muted:Color32,
+    pub accent:Color32, pub primary:Color32,
+    pub button_bg:Color32, pub hover_bg:Color32,
+    pub nav_bg:Color32, pub nav_selected:Color32,
+    pub nav_border:Color32, pub primary_border:Color32,
+    pub selection:Color32, pub extreme_bg:Color32,
+    pub faint_bg:Color32,
+}
+fn rgb(r:u8,g:u8,b:u8)->Color32{Color32::from_rgb(r,g,b)}
+
+pub fn swatches(kind:ThemeKind)->Palette {
+    match kind {
+        ThemeKind::Sage=>Palette {
+            bg:rgb(17,23,26), panel:rgb(24,32,35),card:rgb(30,40,43),
+            stroke:rgb(51,67,68),text:rgb(232,239,236),muted:rgb(164,180,179),
+            accent:rgb(135,194,179),primary:rgb(43,112,104),
+            button_bg:rgb(37,47,50),hover_bg:rgb(48,65,65),
+            nav_bg:rgb(26,35,38),nav_selected:rgb(38,91,85),
+            nav_border:rgb(72,148,135),primary_border:rgb(63,141,128),
+            selection:rgb(46,110,101),extreme_bg:rgb(20,28,31),
+            faint_bg:rgb(31,42,44),
+        },
+        ThemeKind::Graphite=>Palette {
+            bg:rgb(15,16,18),panel:rgb(24,25,28),card:rgb(34,35,39),
+            stroke:rgb(61,62,68),text:rgb(237,238,240),muted:rgb(165,168,175),
+            accent:rgb(204,208,216),primary:rgb(81,86,96),
+            button_bg:rgb(41,43,47),hover_bg:rgb(58,61,67),
+            nav_bg:rgb(29,31,34),nav_selected:rgb(78,82,91),
+            nav_border:rgb(131,137,149),primary_border:rgb(143,149,158),
+            selection:rgb(91,96,108),extreme_bg:rgb(20,21,24),
+            faint_bg:rgb(37,39,44),
+        },
+        ThemeKind::Purple=>Palette {
+            bg:rgb(21,17,29),panel:rgb(31,25,41),card:rgb(42,34,53),
+            stroke:rgb(73,58,89),text:rgb(242,236,247),muted:rgb(185,171,196),
+            accent:rgb(211,167,244),primary:rgb(112,69,154),
+            button_bg:rgb(49,39,61),hover_bg:rgb(67,50,88),
+            nav_bg:rgb(35,28,46),nav_selected:rgb(89,57,122),
+            nav_border:rgb(155,107,203),primary_border:rgb(159,111,206),
+            selection:rgb(113,73,154),extreme_bg:rgb(25,20,34),
+            faint_bg:rgb(43,33,56),
+        },
+        ThemeKind::Orange=>Palette {
+            bg:rgb(25,20,17),panel:rgb(35,27,23),card:rgb(46,36,29),
+            stroke:rgb(87,67,53),text:rgb(245,237,227),muted:rgb(195,177,161),
+            accent:rgb(247,184,121),primary:rgb(151,83,42),
+            button_bg:rgb(55,41,32),hover_bg:rgb(77,55,41),
+            nav_bg:rgb(39,29,24),nav_selected:rgb(111,66,37),
+            nav_border:rgb(197,119,61),primary_border:rgb(210,128,65),
+            selection:rgb(145,84,44),extreme_bg:rgb(30,23,20),
+            faint_bg:rgb(49,36,29),
+        }
+    }
+}
+
+static ACTIVE:AtomicU8=AtomicU8::new(ThemeKind::Sage as u8);
+pub fn selected()->ThemeKind{
+    match ACTIVE.load(Ordering::Relaxed){
+        0=>ThemeKind::Graphite,2=>ThemeKind::Purple,
+        3=>ThemeKind::Orange,_=>ThemeKind::Sage,
+    }
+}
+pub fn select(kind:ThemeKind){ACTIVE.store(kind as u8,Ordering::Relaxed);}
+pub fn colors()->Palette{swatches(selected())}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn palette_ids_round_trip_and_are_distinct(){
+        let mut ids=std::collections::HashSet::new();
+        for kind in ThemeKind::ALL {
+            assert_eq!(ThemeKind::from_id(kind.id()),Some(kind));
+            assert!(ids.insert(kind.id()));
+            let p=swatches(kind);
+            assert_ne!(p.bg,p.card);
+            assert_ne!(p.text,p.bg);
+            assert_ne!(p.primary,p.panel);
+        }
+        // Internal persisted IDs are deliberately unchanged; only display labels
+        // change so existing SQLite settings and restored backups keep working.
+        assert_eq!(ThemeKind::Graphite.id(),"graphite");
+        assert_eq!(ThemeKind::Sage.id(),"sage");
+        assert_eq!(ThemeKind::Purple.id(),"purple");
+        assert_eq!(ThemeKind::Orange.id(),"orange");
+        let labels=ThemeKind::ALL.map(ThemeKind::label);
+        assert_eq!(labels,["Ónix","Jade","Amatista","Ámbar"]);
+        assert_eq!(labels.iter().copied().collect::<std::collections::HashSet<_>>().len(),4);
+        assert_eq!(ThemeKind::from_id("unknown"),None);
+        assert_eq!(ThemeKind::from_id(""),None);
+    }
+}

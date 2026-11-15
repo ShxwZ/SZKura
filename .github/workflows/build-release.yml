@@ -1,0 +1,83 @@
+name: Build, test and publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Rust test + release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config libwayland-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit and integration tests
+        run: cargo test --all-targets
+      - name: Full optimized binary compilation
+        env:
+          SZKURA_BUILD_TAG: v0.1.0-alpha.1000${{ github.run_number }}
+        run: cargo build --release
+      - name: Windows executable artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SZKura-win-x64
+          path: target/release/szkura.exe
+          if-no-files-found: error
+      - name: Linux executable artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SZKura-linux-x64
+          path: target/release/szkura
+          if-no-files-found: error
+
+  release:
+    name: Publish SZKura Windows + Linux prerelease
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: SZKura-win-x64
+          path: dist/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: SZKura-linux-x64
+          path: dist/linux
+      - name: Publish tested binaries for both platforms
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v0.1.0-alpha.1000${{ github.run_number }}"
+          test -s dist/windows/szkura.exe
+          test -s dist/linux/szkura
+          gh release create "$tag" \
+            "dist/windows/szkura.exe#SZKura-win-x64.exe" \
+            "dist/linux/szkura#SZKura-linux-x64" \
+            --repo "${{ github.repository }}" --prerelease \
+            --target "${{ github.sha }}" --title "SZKura $tag" \
+            --notes "SZKura alpha: local BOOTH/VRChat library, archive inspector, ES/EN interface, WebP thumbnails and tested Windows/Linux binaries."
