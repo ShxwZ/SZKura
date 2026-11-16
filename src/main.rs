@@ -5,6 +5,7 @@ mod cover_cache;
 mod theme;
 mod i18n;
 mod sharing_ui;
+mod startup_diagnostics;
 use sharing_ui::SharingUi;
 use cover_cache::{CoverRequest, CoverResult};
 use theme::{ThemeKind,colors};
@@ -2664,10 +2665,15 @@ fn application_icon()->egui::IconData {
 }
 
 fn main()->eframe::Result {
+    startup_diagnostics::install();
     let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default()
         .with_inner_size([1360.0,825.0]).with_min_inner_size([980.0,650.0])
         .with_icon(std::sync::Arc::new(application_icon())),..Default::default()};
-    eframe::run_native("SZKura | Asset Library",options,Box::new(|cc|{
+    let result=eframe::run_native("SZKura | Asset Library",options,Box::new(|cc|{
         Ok(Box::new(BoothApp::new(cc).expect("No se pudo iniciar la base de datos de SZKura")))
-    }))
+    }));
+    if let Err(error)=&result {
+        startup_diagnostics::report(&format!("No se pudo iniciar la ventana de SZKura: {error}"));
+    }
+    result
 }
