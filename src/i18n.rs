@@ -560,10 +560,10 @@ mod tests{
     }
     #[test]
     fn automatic_labeled_open_status_is_translated() {
-        let status="Copia etiquetada enviada a Unity: SZKura_Ropa";
+        let status="Copia etiquetada enviada a Unity: SZKura_Clothing";
         assert_eq!(translate_message(Language::Spanish,status),status);
         assert_eq!(translate_message(Language::English,status),
-            "Labeled copy sent to Unity: SZKura_Ropa");
+            "Labeled copy sent to Unity: SZKura_Clothing");
         let fallback="No se abrió Unity; importa manualmente la copia etiquetada: /tmp/example.unitypackage";
         assert_eq!(translate_message(Language::English,fallback),
             "Unity did not open; manually import the labeled copy: /tmp/example.unitypackage");
