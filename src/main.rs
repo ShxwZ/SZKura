@@ -2394,6 +2394,85 @@ mod archive_tree_layout_tests {
     }
 }
 
+
+fn unity_paths_id(source:&Path,package:Option<&UnityPackage>)->String {
+    match package {
+        Some(package)=>format!("{}|nested|{}|{}|{:?}|{}",
+            source.display(),package.name,package.index,package.zip_chain,package.crc32),
+        None=>format!("{}|direct",source.display()),
+    }
+}
+
+/// Compact themed read-only folder preview. No Unity application or script
+/// is launched; clipboard buttons copy exact folder names from the package.
+fn show_unity_paths_result(
+    ui:&mut egui::Ui,label:&str,loading:bool,
+    preview:Option<&UnityPathsPreview>,error:Option<&str>
+) {
+    ui.add_space(9.0);
+    egui::Frame::new().fill(colors().card)
+        .stroke(egui::Stroke::new(1.0,colors().stroke))
+        .corner_radius(8).inner_margin(12).show(ui,|ui|{
+            ui.label(RichText::new(tr("Carpetas de importación en Unity"))
+                .strong().size(15.0).color(colors().accent));
+            ui.label(RichText::new(label).size(12.0).color(colors().text));
+            ui.label(RichText::new(tr("Rutas originales del paquete; pueden diferir del proyecto Unity actual."))
+                .size(12.0).color(colors().muted));
+            if loading {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(tr("Examinando rutas del UnityPackage..."));
+                });
+            } else if let Some(error)=error {
+                ui.label(RichText::new(format!("{} {error}",
+                    tr("No se pudieron leer las rutas del UnityPackage:")))
+                    .size(12.0).color(colors().muted));
+            } else if let Some(preview)=preview {
+                if preview.main_folders.is_empty() {
+                    ui.label(RichText::new(tr("No contiene rutas válidas dentro de Assets/."))
+                        .size(12.0).color(colors().muted));
+                } else {
+                    ui.label(RichText::new(format!("{}: {}",
+                        tr("Archivos con ruta en Assets/"),preview.asset_count))
+                        .size(12.0).color(colors().muted));
+                    if preview.skipped_paths>0 {
+                        ui.label(RichText::new(format!("{}: {}",
+                            tr("Rutas fuera de Assets/ ignoradas"),preview.skipped_paths))
+                            .size(12.0).color(colors().muted));
+                    }
+                    ui.label(RichText::new(tr("Carpetas principales")).strong()
+                        .color(colors().text).size(13.0));
+                    for folder in &preview.main_folders {
+                        unity_folder_row(ui,folder);
+                    }
+                    if preview.folders!=preview.main_folders {
+                        egui::CollapsingHeader::new(tr("Carpetas exactas"))
+                            .id_salt(("unity-paths-exact",label))
+                            .show(ui,|ui|{
+                                egui::ScrollArea::vertical().id_salt(("unity-exact-scroll",label))
+                                    .max_height(245.0).show(ui,|ui|{
+                                        for folder in &preview.folders {
+                                            unity_folder_row(ui,folder);
+                                        }
+                                    });
+                            });
+                    }
+                }
+            }
+        });
+}
+
+fn unity_folder_row(ui:&mut egui::Ui,folder:&str) {
+    ui.horizontal_wrapped(|ui| {
+        icon(ui,Icon::Archive,colors().accent,13.0);
+        ui.label(RichText::new(folder).size(12.0).color(colors().text));
+        if ui.add(egui::Button::new(tr("Copiar ruta")).min_size(egui::vec2(0.0,30.0)))
+            .clicked() {
+            ui.ctx().copy_text(folder.to_owned());
+        }
+    });
+}
+
 /// Render ZIPs as a real expandable hierarchy, including regular files even
 /// if they have no .unitypackage. ZIPs remain on disk; this only draws metadata.
 fn show_zip_tree(
@@ -2403,6 +2482,7 @@ fn show_zip_tree(
     source:&Path,
     busy:bool,
     open_package:&mut Option<(PathBuf,UnityPackage)>,
+    inspect_package:&mut Option<(PathBuf,Option<UnityPackage>)>,
 ) {
     for child in preview.inner_archives.iter().filter(|node| {
         node.chain.len()==parent.len()+1 && node.chain.starts_with(parent)
@@ -2437,7 +2517,7 @@ fn show_zip_tree(
                         ui.label(RichText::new(tr("Este ZIP está vacío o no contiene archivos seguros."))
                             .size(12.0).color(colors().muted));
                     }
-                    show_zip_tree(ui,preview,&child.chain,source,busy,open_package);
+                    show_zip_tree(ui,preview,&child.chain,source,busy,open_package,inspect_package);
                 }
             });
         response.header_response.on_hover_text(&last.name);
@@ -2464,6 +2544,11 @@ fn show_zip_tree(
                     egui::Button::new(tr("Extraer y abrir"))
                         .min_size(egui::vec2(0.0,32.0))).clicked(){
                     *open_package=Some((source.to_path_buf(),package.clone()));
+                }
+                if ui.add_enabled(!busy,
+                    egui::Button::new(tr("Ver carpetas en Unity"))
+                        .min_size(egui::vec2(0.0,32.0))).clicked(){
+                    *inspect_package=Some((source.to_path_buf(),Some(package.clone())));
                 }
             }
         });
