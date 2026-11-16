@@ -39,7 +39,7 @@ fn workflow_modal(
     body: impl FnOnce(&mut egui::Ui),
 ) -> bool {
     let p = theme::colors();
-    let width = (ctx.content_rect().width() - 80.0).clamp(300.0, 500.0);
+    let width = (ctx.content_rect().width() - 80.0).clamp(300.0, 440.0);
     let modal = egui::Modal::new(egui::Id::new(id))
         .frame(egui::Frame::new()
             .fill(p.panel)
@@ -142,6 +142,9 @@ impl SharingUi {
                 }
                 if action(ui, Icon::Trash, "Detener compartición", false) {
                     self.stop_share();
+                } else if self.status == "Enlace copiado al portapapeles." {
+                    ui.label(RichText::new(tr("Enlace copiado al portapapeles."))
+                        .size(12.0).color(theme::colors().muted));
                 }
             } else if self.active.is_some() {
                 ui.label(RichText::new(tr("Ya estás compartiendo otra ficha."))
@@ -173,7 +176,13 @@ impl SharingUi {
                 self.enabled = old;
                 self.status = format!("No se pudo guardar la preferencia: {err}");
             } else if !self.enabled {
-                self.stop_share();
+                if self.active.is_some() {
+                    self.stop_share();
+                } else {
+                    self.share_target = None;
+                    self.consent = false;
+                    self.status = "Compartición desactivada.".into();
+                }
                 self.import_open = false;
                 self.confirm_import = false;
                 self.manifest = None;
