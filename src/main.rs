@@ -2565,7 +2565,8 @@ fn unity_folder_row(ui:&mut egui::Ui,folder:&str) {
         let (name_rect,_)=ui.allocate_exact_size(
             egui::vec2(name_width,30.0),egui::Sense::hover());
         let mut label_ui=ui.new_child(
-            egui::UiBuilder::new().max_rect(name_rect)
+            egui::UiBuilder::new().id_salt(("unity-folder-label",folder))
+                .max_rect(name_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center))
         );
         label_ui.add(egui::Label::new(
