@@ -272,6 +272,13 @@ pub fn translate(language:Language,s:&str)->&str {
         "Enlace copiado al portapapeles."=>"Link copied to clipboard.",
         "Detener compartición"=>"Stop sharing",
         "Ya estás compartiendo otra ficha."=>"You are already sharing another product.",
+        "Compartiendo ahora:"=>"Currently sharing:",
+        "Ver ficha compartida"=>"View shared product",
+        "Ya hay una ficha compartida"=>"A product is already being shared",
+        "Ir a ficha compartida"=>"Go to shared product",
+        "SZKura solo permite compartir una ficha a la vez."=>"SZKura can share only one product at a time.",
+        "Abre esa ficha para revisar, copiar o detener el enlace activo."=>"Open that product to review, copy, or stop its active link.",
+        "Los cambios sin guardar en la ficha actual podrían perderse al cambiar."=>"Unsaved changes in the current product may be lost when switching.",
         "Compartir ficha"=>"Share product",
         "Enlace revocado."=>"Link revoked.",
         "Enlace creado. Puedes copiarlo desde la cabecera de la ficha."=>"Link created. You can copy it from the product header.",
@@ -461,6 +468,13 @@ mod tests{
             ("Habilitar compartir archivos","Enable file sharing"),
             ("Crear enlace temporal","Create temporary link"),
             ("Detener compartición","Stop sharing"),
+            ("Compartiendo ahora:","Currently sharing:"),
+            ("Ver ficha compartida","View shared product"),
+            ("Ya hay una ficha compartida","A product is already being shared"),
+            ("Ir a ficha compartida","Go to shared product"),
+            ("SZKura solo permite compartir una ficha a la vez.","SZKura can share only one product at a time."),
+            ("Abre esa ficha para revisar, copiar o detener el enlace activo.","Open that product to review, copy, or stop its active link."),
+            ("Los cambios sin guardar en la ficha actual podrían perderse al cambiar.","Unsaved changes in the current product may be lost when switching."),
         ] {
             assert_eq!(translate(Language::Spanish,spanish),spanish);
             assert_eq!(translate(Language::English,spanish),english);
