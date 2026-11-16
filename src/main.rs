@@ -813,6 +813,7 @@ impl BoothApp {
                         }
                     });
                 });
+                self.sharing.active_header(ui);
                 if !self.show_settings && self.selected.is_none() && !self.new_dialog {
                     ui.add_space(10.0);
                     ui.horizontal(|ui|{
@@ -1017,7 +1018,7 @@ impl BoothApp {
                     });
                 }
                 ui.add_space(3.0);
-                self.sharing.detail_actions(ui,id,!attachments.is_empty(),busy);
+                self.sharing.detail_actions(ui,id,&asset.title,!attachments.is_empty(),busy);
                  ui.label(RichText::new(format!("{}  /  {}",tr("Producto en tu biblioteca"),asset.title))
                     .color(colors().muted).size(13.0));
                 ui.add_space(14.0);ui.separator();ui.add_space(11.0);
@@ -2112,6 +2113,14 @@ impl eframe::App for BoothApp {
         self.confirm_restore_dialog(ctx);
         self.sharing.render(ctx,self.paths.db.parent().unwrap_or(Path::new(".")),
             &self.paths.db,&self.paths.library,&self.paths.covers);
+        if let Some(id)=self.sharing.take_navigation() {
+            // Navigate through the existing product selector so the editor
+            // loads the correct details, cover and attachment state.
+            self.show_settings=false;
+            self.new_dialog=false;
+            self.select_id(id);
+            ctx.request_repaint();
+        }
         if self.receiver.is_some(){ctx.request_repaint_after(Duration::from_millis(150));}
     }
 }
