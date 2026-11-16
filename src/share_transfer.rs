@@ -210,7 +210,7 @@ fn offer(db_path: &Path, asset_id: i64) -> Result<Offer> {
         booth_url:item.booth_url,nsfw:item.nsfw,cover:cover_info,files,
     };
     validate_manifest(&manifest)?;
-    if serde_json::to_vec(&manifest)?.len() > MAX_MANIFEST_BYTES {
+    if (serde_json::to_vec(&manifest)?.len() as u64) > MAX_MANIFEST_BYTES {
         bail!("El manifiesto es demasiado grande");
     }
     Ok(Offer {manifest,paths,cover})
@@ -456,7 +456,7 @@ fn serve_offer(server: Server, offer: Offer, token: String,
         } else if let Some(index) = suffix.strip_prefix("/file/")
             .and_then(|n|n.parse::<usize>().ok()) {
             if let Some(path) = offer.paths.get(index) {
-                if max_downloads != 0 && counts[index].fetch_update(
+                if max_downloads != 0 && counts[index].try_update(
                     Ordering::SeqCst,Ordering::SeqCst,
                     |n| (n < max_downloads).then_some(n+1)).is_err() {
                     let _=request.respond(Response::empty(StatusCode(429)));
