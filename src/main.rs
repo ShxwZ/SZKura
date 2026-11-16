@@ -616,18 +616,30 @@ impl BoothApp {
             }
         }
     }
-    fn launch_unity_package(&mut self,source:PathBuf,entry:UnityPackage,id:i64){
+    /// Opening from SZKura always creates (or reuses) a labeled copy in the
+    /// bounded Unity cache. Never open the untagged source if labeling fails:
+    /// the user explicitly requested that the normal import action tags assets.
+    fn launch_unity_package(
+        &mut self,source:PathBuf,entry:Option<UnityPackage>,id:i64,category:String
+    ){
         self.launch(move|paths|{
-            let extracted=package_inspect::extract_unitypackage_nested(
-                &source,&entry,&paths.unity_cache
+            let original=if let Some(entry)=entry {
+                package_inspect::extract_unitypackage_nested(
+                    &source,&entry,&paths.unity_cache
+                )?
+            }else{source};
+            let label=unitypackage_labels::label_for_category(&category)?;
+            let tagged=unitypackage_labels::cached_labeled_unitypackage(
+                &original,&paths.unity_cache,&category
             )?;
-            let message=match open_unity_file(&extracted){
-                Ok(())=>format!("Enviado a la aplicación asociada: {}",entry.name),
+            let message=match open_unity_file(&tagged){
+                Ok(())=>format!("Copia etiquetada enviada a Unity: {label}"),
                 Err(error)=>{
-                    // The extraction remains available for a manual Unity import.
-                    let _=reveal_file(&extracted.to_string_lossy());
-                    format!("Unity no se abrió automáticamente ({error}). Archivo extraído: {}",
-                        extracted.display())
+                    // Unity may be absent or OS associations unavailable. Only
+                    // reveal the labeled copy for importing manually.
+                    let _=reveal_file(&tagged.to_string_lossy());
+                    format!("No se abrió Unity; importa manualmente la copia etiquetada: {} ({error})",
+                        tagged.display())
                 }
             };
             Ok(JobResult{message,select_id:Some(id)})
@@ -1190,9 +1202,11 @@ impl BoothApp {
                                                 .min_size(egui::vec2(0.0,34.0))).clicked(){
                                             inspect_zip=Some(file.stored_path.clone());
                                         }
-                                        if direct_package && ui.add_enabled(available,
+                                        if direct_package && ui.add_enabled(available && !busy,
                                             egui::Button::new(tr("Abrir en Unity"))
-                                                .min_size(egui::vec2(0.0,34.0))).clicked(){
+                                                .min_size(egui::vec2(0.0,34.0)))
+                                            .on_hover_text(tr("Al abrir, se añade automáticamente la etiqueta SZKura en una copia de caché."))
+                                            .clicked(){
                                             open_direct=Some(source.clone());
                                         }
                                         if direct_package && ui.add_enabled(available &&
@@ -1338,16 +1352,10 @@ impl BoothApp {
         if let Some(path)=inspect_zip{self.inspect_archive(path,false);}
         if let Some(path)=force_reinspect{self.inspect_archive(path,true);}
         if let Some(path)=open_direct{
-            match open_unity_file(&path) {
-                Ok(())=>self.status="Archivo enviado a la aplicación asociada a .unitypackage".into(),
-                Err(err)=>{
-                    let _=reveal_file(&path.to_string_lossy());
-                    self.status=format!("No se pudo abrir en Unity ({err}). Usa Assets > Import Package > Custom Package");
-                }
-            }
+            self.launch_unity_package(path,None,id,asset.category.clone());
         }
         if let Some((archive,entry))=open_nested{
-            self.launch_unity_package(archive,entry,id);
+            self.launch_unity_package(archive,Some(entry),id,asset.category.clone());
         }
         if let Some((source,package))=inspect_unity{
             self.toggle_unity_paths(source,package);
@@ -2541,6 +2549,8 @@ fn show_unity_paths_result(
                     }
                     if let Ok(unity_label)=unitypackage_labels::label_for_category(category) {
                         ui.add_space(6.0);
+                        ui.label(RichText::new(tr("Al abrir en Unity desde SZKura, esta etiqueta se aplica automáticamente a una copia de caché."))
+                            .size(12.0).color(colors().text));
                         ui.label(RichText::new(tr("Experimental: genera una copia; no modifica originales ni carpetas de Unity."))
                             .size(12.0).color(colors().muted));
                         ui.horizontal_wrapped(|ui|{
@@ -2727,7 +2737,9 @@ fn show_zip_tree(
                     ui.add_space(23.0);
                     if ui.add_enabled(!busy && package.size<=package_inspect::MAX_PACKAGE_BYTES,
                         egui::Button::new(tr("Extraer y abrir"))
-                            .min_size(egui::vec2(0.0,32.0))).clicked(){
+                            .min_size(egui::vec2(0.0,32.0)))
+                        .on_hover_text(tr("Al abrir, se añade automáticamente la etiqueta SZKura en una copia de caché."))
+                        .clicked(){
                         *open_package=Some((source.to_path_buf(),package.clone()));
                     }
                     let unity_open=active_unity_paths_key
