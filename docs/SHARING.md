@@ -8,7 +8,7 @@ Función opcional y desactivada por defecto. SZKura **no descarga ni ejecuta Clo
 2. Desde una ficha con archivos adjuntos pulsa **Compartir ficha**.
 3. Elige caducidad (15-360 minutos), descargas máximas **por archivo** y contraseña opcional.
 4. La primera vez, SZKura muestra un diálogo de consentimiento con origen y finalidad de Cloudflare Tunnel; **Cancelar** no descarga nada. Si aceptas, descarga la versión fijada desde GitHub oficial y verifica su SHA-256 antes de ejecutarla.
-5. Cuando se haya creado, el diálogo se cerrará y aparecerá **Copiar enlace** en la cabecera de la ficha, junto a **Detener compartición**. El receptor podrá descargar los archivos desde el navegador o importarlos desde otra instalación de SZKura.
+5. Cuando se haya creado, el diálogo se cerrará y aparecerá **Copiar enlace** en la cabecera de la ficha, junto a **Detener compartición**. El receptor **solo podrá importar la ficha y los archivos desde otra instalación compatible de SZKura**. Abrir el enlace en un navegador no muestra una página ni permite descargas.
 6. Pulsa **Detener compartición** en la cabecera de esa ficha para revocar el enlace.
 
 La primera versión comparte la **ficha y todos sus adjuntos**; no ofrece selección individual de archivos. No comparte otras fichas, rutas originales, credenciales, preferencias ni la base de datos completa.
@@ -31,9 +31,12 @@ El componente está fijado a una versión exacta; una actualización requiere mo
 
 ## Seguridad y límites
 
-- Servidor local limitado a 127.0.0.1, token aleatorio de 256 bits, caducidad, límite de descargas por archivo y contraseña opcional HTTP Basic sobre HTTPS.
+- Servidor local limitado a 127.0.0.1, token aleatorio de 256 bits en la ruta, **segunda clave aleatoria de 256 bits** en el fragmento del enlace (`#key=...`), caducidad, límite de descargas por archivo y contraseña opcional HTTP Basic sobre HTTPS.
 - En el receptor: validación estricta de enlaces HTTPS de trycloudflare.com, manifiesto versionado, nombres de archivos, extensiones, tamaños y SHA-256.
-- El enlace es un secreto de acceso. No lo publiques y no reutilices contraseñas importantes.
+- **Sin interfaz web:** la URL base, el manifiesto, la portada y los archivos devuelven HTTP 404 cuando falta o es incorrecta la cabecera `X-SZKura-Transfer-Key`. Los navegadores **no envían fragmentos URL** (`#key=...`) en sus peticiones; SZKura sí extrae esa clave y la presenta en la cabecera al importar. Tampoco hay listado HTML ni diálogo de autenticación web.
+- La cabecera y el secreto compartido **no demuestran que el cliente sea una aplicación SZKura auténtica**: alguien con el enlace completo y conocimientos técnicos puede reproducir las peticiones con herramientas HTTP. La restricción impide la navegación/descarga directa desde el navegador, pero no sustituye a una autenticación de identidad de dispositivos.
+- **Compatibilidad:** remitente y receptor deben usar una versión con este protocolo. Las compilaciones anteriores, que solo utilizaban el token de ruta y no la clave del fragmento, no pueden intercambiar enlaces con esta versión.
+- El enlace completo (incluido el fragmento `#key=...`) es un secreto de acceso. No lo publiques, no lo incluyas en logs y no reutilices contraseñas importantes.
 - Solo puedes compartir assets cuando la licencia o el titular lo permitan. Una compra de BOOTH no autoriza automáticamente a redistribuirla.
 - Cloudflare Quick Tunnels es un servicio para **pruebas y desarrollo**, no garantiza estabilidad para transferencias grandes. Esta primera versión no permite reanudar descargas interrumpidas.
 - Los archivos se envían desde el equipo del emisor a través del proveedor del túnel; SZKura no aloja copias permanentes en un servidor propio.

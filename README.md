@@ -13,7 +13,7 @@ SZKura is a lightweight desktop app for keeping track of your [BOOTH](https://bo
 - Fast, optimized WebP covers, blurred backgrounds, and four selectable color palettes.
 - **English and Spanish UI**, with a saved language preference in Settings.
 - Local SQLite data, optional managed storage, and portable `.szkura` backups.
-- **Optional, consent-based temporary sharing** via Cloudflare Tunnel: browser downloads or [SZKura-to-SZKura asset import](docs/SHARING.md), without manual tunnel installation.
+- **Optional, consent-based temporary sharing** via Cloudflare Tunnel: [SZKura-to-SZKura product import](docs/SHARING.md) using a private app request header (no browser file listing), without manual tunnel installation.
 
 ## Screenshots
 
