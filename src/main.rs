@@ -571,6 +571,16 @@ impl BoothApp {
             let _=sender.send(result);
         });
     }
+    /// The same action opens and collapses the current package preview.
+    /// Closing drops the receiver: an already-running worker cannot reopen it.
+    fn toggle_unity_paths(&mut self,source:PathBuf,package:Option<UnityPackage>) {
+        let key=unity_paths_id(&source,package.as_ref());
+        if self.unity_paths_key.as_deref()==Some(key.as_str()) {
+            self.clear_unity_paths();
+        } else {
+            self.inspect_unity_paths(source,package);
+        }
+    }
     fn poll_unity_paths(&mut self,ctx:&egui::Context) {
         if let Some(answer)=self.unity_paths_scan.as_ref().and_then(|rx|rx.try_recv().ok()){
             self.unity_paths_scan=None;
@@ -1141,6 +1151,8 @@ impl BoothApp {
                             let direct_package=source.extension().and_then(|x|x.to_str())
                                 .is_some_and(|x|x.eq_ignore_ascii_case("unitypackage"));
                             let expanded=self.inspected_zip.as_deref()==Some(&file.stored_path);
+                            let unity_direct_open=self.unity_paths_key.as_deref()
+                                ==Some(unity_paths_id(&source,None).as_str());
                             egui::Frame::new().fill(colors().panel)
                                 .stroke(egui::Stroke::new(1.0,colors().stroke))
                                 .corner_radius(10).inner_margin(14).show(ui,|ui|{
@@ -1181,15 +1193,15 @@ impl BoothApp {
                                                 .min_size(egui::vec2(0.0,34.0))).clicked(){
                                             open_direct=Some(source.clone());
                                         }
-                                        if direct_package && ui.add_enabled(available && self.unity_paths_scan.is_none(),
-                                            egui::Button::new(tr("Ver carpetas en Unity"))
+                                        if direct_package && ui.add_enabled(available &&
+                                            (self.unity_paths_scan.is_none() || unity_direct_open),
+                                            egui::Button::new(tr(unity_folders_action_label(unity_direct_open)))
                                                 .min_size(egui::vec2(0.0,34.0))).clicked(){
                                             inspect_unity=Some((source.clone(),None));
                                         }
                                         if ui.button(tr("Desvincular")).clicked(){detach=Some(file.id);}
                                     });
-                                    if direct_package && self.unity_paths_key.as_deref()
-                                        ==Some(unity_paths_id(&source,None).as_str()) {
+                                    if direct_package && unity_direct_open {
                                         show_unity_paths_result(ui,&self.unity_paths_label,
                                             self.unity_paths_scan.is_some(),
                                             self.unity_paths_preview.as_ref(),
@@ -1259,6 +1271,7 @@ impl BoothApp {
                                                         // A short list needs no inner scroll area:
                                                         // avoid the large empty bottom under one file.
                                                         show_zip_tree(ui,preview,&[],&source,busy,
+                                                            self.unity_paths_key.as_deref(),self.unity_paths_scan.is_some(),
                                                             &mut open_nested,&mut inspect_unity);
                                                     }else{
                                                         egui::ScrollArea::vertical()
@@ -1268,8 +1281,10 @@ impl BoothApp {
                                                             .auto_shrink([false,false])
                                                             .show(ui,|ui|{
                                                                 show_zip_tree(ui,preview,&[],
-                                                                    &source,busy,&mut open_nested,
-                                                                    &mut inspect_unity);
+                                                                    &source,busy,
+                                                                    self.unity_paths_key.as_deref(),
+                                                                    self.unity_paths_scan.is_some(),
+                                                                    &mut open_nested,&mut inspect_unity);
                                                             });
                                                     }
                                                 });
@@ -1321,7 +1336,7 @@ impl BoothApp {
             self.launch_unity_package(archive,entry,id);
         }
         if let Some((source,package))=inspect_unity{
-            self.inspect_unity_paths(source,package);
+            self.toggle_unity_paths(source,package);
         }
         if let Some(path)=show_path{
             match reveal_file(&path){Ok(())=>self.status="Ubicación solicitada al explorador".into(),
@@ -2399,6 +2414,29 @@ mod archive_tree_layout_tests {
 }
 
 
+fn unity_folders_action_label(is_visible:bool)->&'static str {
+    if is_visible {"Ocultar carpetas en Unity"} else {"Ver carpetas en Unity"}
+}
+
+#[cfg(test)]
+mod unity_folders_toggle_tests {
+    use super::{unity_folders_action_label,unity_paths_id};
+    use std::path::Path;
+
+    #[test]
+    fn button_label_changes_to_hide_while_preview_is_open() {
+        assert_eq!(unity_folders_action_label(false),"Ver carpetas en Unity");
+        assert_eq!(unity_folders_action_label(true),"Ocultar carpetas en Unity");
+    }
+    #[test]
+    fn selection_identity_is_stable_for_direct_packages() {
+        assert_eq!(unity_paths_id(Path::new("example.unitypackage"),None),
+            unity_paths_id(Path::new("example.unitypackage"),None));
+        assert_ne!(unity_paths_id(Path::new("other.unitypackage"),None),
+            unity_paths_id(Path::new("example.unitypackage"),None));
+    }
+}
+
 fn unity_paths_id(source:&Path,package:Option<&UnityPackage>)->String {
     match package {
         Some(package)=>format!("{}|nested|{}|{}|{:?}|{}",
@@ -2545,6 +2583,8 @@ fn show_zip_tree(
     parent:&[package_inspect::NestedZip],
     source:&Path,
     busy:bool,
+    active_unity_paths_key:Option<&str>,
+    unity_paths_scanning:bool,
     open_package:&mut Option<(PathBuf,UnityPackage)>,
     inspect_package:&mut Option<(PathBuf,Option<UnityPackage>)>,
 ) {
@@ -2581,7 +2621,8 @@ fn show_zip_tree(
                         ui.label(RichText::new(tr("Este ZIP está vacío o no contiene archivos seguros."))
                             .size(12.0).color(colors().muted));
                     }
-                    show_zip_tree(ui,preview,&child.chain,source,busy,open_package,inspect_package);
+                    show_zip_tree(ui,preview,&child.chain,source,busy,active_unity_paths_key,
+                        unity_paths_scanning,open_package,inspect_package);
                 }
             });
         response.header_response.on_hover_text(&last.name);
@@ -2619,8 +2660,10 @@ fn show_zip_tree(
                             .min_size(egui::vec2(0.0,32.0))).clicked(){
                         *open_package=Some((source.to_path_buf(),package.clone()));
                     }
-                    if ui.add_enabled(!busy,
-                        egui::Button::new(tr("Ver carpetas en Unity"))
+                    let unity_open=active_unity_paths_key
+                        ==Some(unity_paths_id(source,Some(package)).as_str());
+                    if ui.add_enabled(!busy && (!unity_paths_scanning || unity_open),
+                        egui::Button::new(tr(unity_folders_action_label(unity_open)))
                             .min_size(egui::vec2(0.0,32.0))).clicked(){
                         *inspect_package=Some((source.to_path_buf(),Some(package.clone())));
                     }
