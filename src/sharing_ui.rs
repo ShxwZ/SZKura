@@ -369,7 +369,8 @@ impl SharingUi {
                         });
                 });
                 ui.label(tr("Contraseña adicional (opcional, se entrega por separado):"));
-                ui.add(egui::TextEdit::singleline(&mut self.password).password(true));
+                ui.add(egui::TextEdit::singleline(&mut self.password)
+                    .desired_width(ui.available_width()).password(true));
                 if self.share_rx.is_some() {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -435,12 +436,13 @@ impl SharingUi {
             let close = workflow_modal(ctx, "asset-import-flow", "Importar ficha desde enlace SZKura", |ui| {
                 dialog_text(ui, "Pega el enlace HTTPS que te ha enviado otra instalación de SZKura:");
                 if ui.add_enabled(!working, egui::TextEdit::singleline(&mut self.import_link)
+                    .desired_width(ui.available_width())
                     .hint_text(tr("Enlace HTTPS de SZKura"))).changed() {
                     self.manifest = None;
                 }
                 ui.label(tr("Contraseña, si el remitente estableció una:"));
                 if ui.add_enabled(!working, egui::TextEdit::singleline(&mut self.import_password)
-                    .password(true)).changed() {
+                    .desired_width(ui.available_width()).password(true)).changed() {
                     self.manifest = None;
                 }
                 if let Some(m) = &self.manifest {
