@@ -126,6 +126,11 @@ impl SharingUi {
     fn navigate_to_active(&mut self) {
         self.navigate_to_shared = self.active_asset;
         self.active_notice = false;
+        // Product navigation should not leave an old preview dialog floating
+        // over the destination's copy/revoke controls.
+        self.import_open = false;
+        self.confirm_import = false;
+        self.manifest = None;
     }
     /// A persistent, contextual indicator: the active product is visible
     /// from the library, settings, and any other product detail.
@@ -408,7 +413,8 @@ impl SharingUi {
             if let (Some(id), Some(title)) = (self.active_asset, self.active_title.clone()) {
                 let choice = confirmation_dialog(
                     ctx, "szkura-already-sharing-notice", "Ya hay una ficha compartida",
-                    "Ir a ficha compartida", ConfirmTone::Primary, true, |ui| {
+                    "Ir a ficha compartida", ConfirmTone::Primary,
+                    self.import_rx.is_none() && self.preview_rx.is_none(), |ui| {
                         dialog_text(ui, "SZKura solo permite compartir una ficha a la vez.");
                         ui.add_space(9.0);
                         dialog_subject(ui, &title);
@@ -428,6 +434,8 @@ impl SharingUi {
             } else {
                 self.active_notice = false;
             }
+            // Never stack this navigation prompt with an import/share modal.
+            return;
         }
         // The product link is copied from the detail header. The modal only
         // configures a temporary share and then closes after successful startup.
@@ -626,9 +634,11 @@ mod tests {
         ui.open_share(35,"Other product");
         assert!(ui.active_notice);
         assert!(ui.share_target.is_none());
+        ui.import_open = true;
         assert_eq!(ui.active_title.as_deref(),Some("Shared product"));
         ui.navigate_to_active();
         assert!(!ui.active_notice);
+        assert!(!ui.import_open);
         assert_eq!(ui.take_navigation(),Some(17));
         assert_eq!(ui.take_navigation(),None);
         ui.stop_share();
