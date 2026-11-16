@@ -136,6 +136,8 @@ impl SharingUi {
                 ui.label(RichText::new(tr("Enlace de compartición activo"))
                     .size(12.5).color(theme::colors().accent))
                     .on_hover_text(&url);
+                ui.label(RichText::new(tr("Solo para importar en SZKura; no hay descarga desde el navegador."))
+                    .size(11.5).color(theme::colors().muted));
                 if action(ui, Icon::Link, "Copiar enlace", true) {
                     ui.ctx().copy_text(url);
                     self.status = "Enlace copiado al portapapeles.".into();

@@ -277,6 +277,11 @@ pub fn translate(language:Language,s:&str)->&str {
         "Enlace creado. Puedes copiarlo desde la cabecera de la ficha."=>"Link created. You can copy it from the product header.",
         "Compartición cancelada."=>"Sharing canceled.",
         "Compartición desactivada."=>"Sharing disabled.",
+        "Enlace no válido"=>"Invalid link",
+        "Solo se admiten enlaces HTTPS de SZKura en trycloudflare.com"=>"Only SZKura HTTPS links on trycloudflare.com are accepted",
+        "El enlace no tiene el formato de transferencia SZKura"=>"This link is not a valid SZKura transfer link",
+        "El enlace requiere una clave de transferencia SZKura válida"=>"This link requires a valid SZKura transfer key",
+        "Solo para importar en SZKura; no hay descarga desde el navegador."=>"Import via SZKura only; browser downloads are unavailable.",
         "Ficha comprobada. Revisa antes de importar."=>"Product checked. Review before importing.",
         "Ficha y archivos importados correctamente."=>"Product and files imported successfully.",
         "El enlace ha caducado y el túnel se ha detenido."=>"The link expired and the tunnel was stopped.",
@@ -332,7 +337,9 @@ pub fn translate_message(language:Language, message:&str)->std::borrow::Cow<'_,s
     }
     for &(es,en) in MESSAGE_PREFIXES {
         if let Some(tail)=message.strip_prefix(es) {
-            return Cow::Owned(format!("{en}{tail}"));
+            // Translate a known nested error too, without changing paths or
+            // user-supplied text that lacks a translation key.
+            return Cow::Owned(format!("{en}{}", translate(language,tail)));
         }
     }
     Cow::Borrowed(message)
@@ -461,6 +468,11 @@ mod tests{
         assert_eq!(
             translate_message(Language::English,"Error al compartir: conexión fallida"),
             "Sharing error: conexión fallida"
+        );
+        assert_eq!(
+            translate_message(Language::English,
+                "Error al abrir enlace: El enlace requiere una clave de transferencia SZKura válida"),
+            "Could not open link: This link requires a valid SZKura transfer key"
         );
     }
     #[test]
