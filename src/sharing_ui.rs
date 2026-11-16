@@ -1,8 +1,15 @@
-//! egui controller for optional, explicitly consented sharing and import.
+//! Opt-in transfer UI using SZKura's shared visual language and ES/EN i18n.
+//! Consent uses the same confirmation_dialog as other high-impact actions.
+//! Multistep workflows use themed egui::Modal, never unstyled floating windows.
+use crate::{
+    i18n::{tr, tr_message},
+    theme,
+    ui_support::{action, confirmation_dialog, dialog_subject, dialog_text, ConfirmChoice, ConfirmTone, Icon},
+};
 use eframe::egui::{self, RichText};
 use std::{
-    path::{Path,PathBuf},
-    sync::mpsc::{self,Receiver},
+    path::Path,
+    sync::mpsc::{self, Receiver},
     thread,
     time::Duration,
 };
@@ -11,166 +18,298 @@ use szkura::{
     share_transfer::{self, Manifest, ShareSession},
 };
 
+fn modal_button(ui: &mut egui::Ui, title: &str, primary: bool, enabled: bool) -> bool {
+    let p = theme::colors();
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(tr(title)).color(p.text).size(13.0))
+            .min_size(egui::vec2(0.0, 36.0))
+            .corner_radius(8.0)
+            .fill(if primary { p.primary } else { p.button_bg })
+            .stroke(egui::Stroke::new(1.0, if primary { p.primary_border } else { p.stroke })),
+    ).clicked()
+}
+
+/// Matches the application's modal frame and typography, but supports a form
+/// instead of forcing the two-button confirmation helper onto a multi-step flow.
+fn workflow_modal(
+    ctx: &egui::Context,
+    id: &'static str,
+    heading: &str,
+    body: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let p = theme::colors();
+    let width = (ctx.content_rect().width() - 80.0).clamp(300.0, 500.0);
+    let modal = egui::Modal::new(egui::Id::new(id))
+        .frame(egui::Frame::new()
+            .fill(p.panel)
+            .stroke(egui::Stroke::new(1.0, p.stroke))
+            .corner_radius(12.0)
+            .inner_margin(egui::Margin::symmetric(20, 18)))
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            ui.label(RichText::new(tr(heading)).strong().size(19.0).color(p.text));
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(12.0);
+            body(ui);
+        });
+    modal.should_close()
+}
+
 pub struct SharingUi {
     pub enabled: bool,
     share_target: Option<i64>,
+    pending_asset: Option<i64>,
     active_asset: Option<i64>,
     active: Option<ShareSession>,
-    share_rx: Option<Receiver<Result<ShareSession,String>>>,
+    share_rx: Option<Receiver<Result<ShareSession, String>>>,
     consent: bool,
     minutes: u64,
     max_downloads: u32,
     password: String,
     pub status: String,
     import_open: bool,
+    confirm_import: bool,
     import_link: String,
     import_password: String,
     manifest: Option<Manifest>,
-    preview_rx: Option<Receiver<Result<Manifest,String>>>,
-    import_rx: Option<Receiver<Result<i64,String>>>,
+    preview_rx: Option<Receiver<Result<Manifest, String>>>,
+    import_rx: Option<Receiver<Result<i64, String>>>,
 }
 impl SharingUi {
-    pub fn new(enabled:bool) -> Self {
+    pub fn new(enabled: bool) -> Self {
         Self {
-            enabled,share_target:None,active_asset:None,active:None,share_rx:None,
-            consent:false,minutes:30,max_downloads:1,password:String::new(),
-            status:String::new(),import_open:false,import_link:String::new(),
-            import_password:String::new(),manifest:None,preview_rx:None,import_rx:None,
+            enabled,
+            share_target: None,
+            pending_asset: None,
+            active_asset: None,
+            active: None,
+            share_rx: None,
+            consent: false,
+            minutes: 30,
+            max_downloads: 1,
+            password: String::new(),
+            status: String::new(),
+            import_open: false,
+            confirm_import: false,
+            import_link: String::new(),
+            import_password: String::new(),
+            manifest: None,
+            preview_rx: None,
+            import_rx: None,
         }
     }
-    pub fn open_share(&mut self, id:i64) {
-        if self.enabled { self.share_target=Some(id); }
+    pub fn open_share(&mut self, id: i64) {
+        if self.enabled && self.active.is_none() && self.share_rx.is_none() {
+            self.share_target = Some(id);
+            self.status.clear();
+        }
     }
     pub fn open_import(&mut self) {
-        self.import_open=true;
+        if self.enabled {
+            self.import_open = true;
+            self.status.clear();
+        }
     }
-    pub fn settings_ui(&mut self,ui:&mut egui::Ui,db:&mut Catalog,data_dir:&Path) {
+    fn active_url_for(&self, id: i64) -> Option<&str> {
+        if !self.enabled || self.active_asset != Some(id) {
+            return None;
+        }
+        self.active.as_ref().filter(|s| !s.expired()).map(|s| s.url.as_str())
+    }
+    fn stop_share(&mut self) {
+        self.active = None; // Drop kills cloudflared and revokes the link.
+        self.active_asset = None;
+        self.share_target = None;
+        self.consent = false;
+        self.status = "Enlace revocado.".into();
+    }
+
+    /// Product-specific actions belong above the product scroll, not in an
+    /// attachment list or a floating window.
+    pub fn detail_actions(&mut self, ui: &mut egui::Ui, id: i64, has_files: bool, busy: bool) {
+        if !self.enabled { return; }
+        let active_url = self.active_url_for(id).map(str::to_owned);
+        ui.horizontal_wrapped(|ui| {
+            if let Some(url) = active_url {
+                ui.label(RichText::new(tr("Enlace de compartición activo"))
+                    .size(12.5).color(theme::colors().accent))
+                    .on_hover_text(&url);
+                if action(ui, Icon::Link, "Copiar enlace", true) {
+                    ui.ctx().copy_text(url);
+                    self.status = "Enlace copiado al portapapeles.".into();
+                }
+                if action(ui, Icon::Trash, "Detener compartición", false) {
+                    self.stop_share();
+                }
+            } else if self.active.is_some() {
+                ui.label(RichText::new(tr("Ya estás compartiendo otra ficha."))
+                    .size(12.5).color(theme::colors().muted));
+            } else if has_files {
+                if ui.add_enabled_ui(!busy && self.share_rx.is_none(), |ui| {
+                    action(ui, Icon::Link, "Compartir ficha", false)
+                }).inner {
+                    self.open_share(id);
+                }
+            }
+        });
+    }
+
+    pub fn settings_ui(&mut self, ui: &mut egui::Ui, db: &mut Catalog, data_dir: &Path) {
+        let p = theme::colors();
         ui.separator();
         ui.add_space(10.0);
-        ui.label(RichText::new("Compartir temporalmente (opcional)").strong().size(17.0));
-        ui.label("Transferencia HTTPS entre equipos. Cloudflare Tunnel no se descarga al instalar ni al abrir SZKura.");
-        let old=self.enabled;
-        if ui.checkbox(&mut self.enabled,"Habilitar compartir archivos").changed() {
-            if let Err(err)=db.update_preference("sharing_enabled",self.enabled) {
-                self.enabled=old;
-                self.status=format!("No se pudo guardar la preferencia: {err}");
+        ui.label(RichText::new(tr("Compartir temporalmente (opcional)"))
+            .strong().color(p.text).size(17.0));
+        ui.label(RichText::new(tr("Transferencia HTTPS entre equipos. Cloudflare Tunnel no se descarga al instalar ni al abrir SZKura."))
+            .color(p.muted).size(13.0));
+        let working = self.share_rx.is_some() || self.import_rx.is_some() || self.preview_rx.is_some();
+        let old = self.enabled;
+        if ui.add_enabled_ui(!working, |ui| {
+            ui.checkbox(&mut self.enabled, tr("Habilitar compartir archivos"))
+        }).inner.changed() {
+            if let Err(err) = db.update_preference("sharing_enabled", self.enabled) {
+                self.enabled = old;
+                self.status = format!("No se pudo guardar la preferencia: {err}");
             } else if !self.enabled {
-                self.active=None;
-                self.share_target=None;
-                self.consent=false;
+                self.stop_share();
+                self.import_open = false;
+                self.confirm_import = false;
+                self.manifest = None;
             }
         }
-        let present=share_transfer::component_present(data_dir);
-        ui.label(if present {
+        if working {
+            ui.label(RichText::new(tr("Espera a que termine la transferencia para cambiar esta opción."))
+                .color(p.muted).size(12.0));
+        }
+        let present = share_transfer::component_present(data_dir);
+        ui.label(RichText::new(tr(if present {
             "Componente opcional: instalado (se comprueba SHA-256 antes de ejecutarlo)."
         } else {
             "Componente opcional: no descargado. Se solicitará permiso en el primer uso."
-        });
-        if present && ui.add_enabled(self.active.is_none() && self.share_rx.is_none(),
-            egui::Button::new("Eliminar Cloudflare Tunnel descargado")).clicked() {
+        })).color(p.muted).size(12.0));
+        if present && ui.add_enabled_ui(self.active.is_none() && !working, |ui| {
+            action(ui, Icon::Trash, "Eliminar Cloudflare Tunnel descargado", false)
+        }).inner {
             match share_transfer::remove_component(data_dir) {
-                Ok(())=>self.status="Componente eliminado. Se volverá a solicitar permiso para descargarlo.".into(),
-                Err(e)=>self.status=format!("No se pudo eliminar el componente: {e}"),
+                Ok(()) => self.status = "Componente eliminado. Se volverá a solicitar permiso para descargarlo.".into(),
+                Err(err) => self.status = format!("No se pudo eliminar el componente: {err}"),
             }
         }
-        if !self.status.is_empty(){ui.label(&self.status);}
+        if !self.status.is_empty() {
+            ui.label(RichText::new(tr_message(&self.status).as_ref()).color(p.muted).size(12.0));
+        }
     }
-    fn begin_share(&mut self, data_dir:&Path, db_path:&Path, install:bool) {
-        let Some(asset_id)=self.share_target else{return};
-        if self.share_rx.is_some() || self.active.is_some(){return;}
-        let (tx,rx)=mpsc::channel();
-        let data=data_dir.to_path_buf();
-        let db=db_path.to_path_buf();
-        let minutes=self.minutes;
-        let limit=self.max_downloads;
-        let password=self.password.clone();
-        self.share_rx=Some(rx);
-        self.consent=false;
-        self.status=if install {"Descargando y verificando Cloudflare Tunnel..."}
-            else {"Creando enlace temporal..."}.into();
-        thread::spawn(move||{
-            let result=(||{
-                if install {share_transfer::install_component_with_consent(&data)?;}
-                share_transfer::start_share(&data,&db,asset_id,minutes,limit,password)
-            })().map_err(|e:anyhow::Error|format!("{e:#}"));
-            let _=tx.send(result);
+
+    fn begin_share(&mut self, data_dir: &Path, db_path: &Path, install: bool) {
+        let Some(asset_id) = self.share_target else { return; };
+        if self.share_rx.is_some() || self.active.is_some() || !self.enabled { return; }
+        let (tx, rx) = mpsc::channel();
+        let data = data_dir.to_path_buf();
+        let db = db_path.to_path_buf();
+        let minutes = self.minutes;
+        let limit = self.max_downloads;
+        let password = self.password.clone();
+        self.share_rx = Some(rx);
+        self.pending_asset = Some(asset_id);
+        self.consent = false;
+        self.status = if install { "Descargando y verificando Cloudflare Tunnel..." }
+            else { "Creando enlace temporal..." }.into();
+        thread::spawn(move || {
+            let result = (|| {
+                if install {
+                    share_transfer::install_component_with_consent(&data)?;
+                }
+                share_transfer::start_share(&data, &db, asset_id, minutes, limit, password)
+            })().map_err(|err: anyhow::Error| format!("{err:#}"));
+            let _ = tx.send(result);
         });
     }
     fn inspect_link(&mut self) {
-        if self.preview_rx.is_some() || self.import_rx.is_some(){return;}
-        self.manifest=None;
-        let (tx,rx)=mpsc::channel();
-        let url=self.import_link.clone();
-        let password=self.import_password.clone();
-        self.preview_rx=Some(rx);
-        self.status="Comprobando el manifiesto del enlace...".into();
-        thread::spawn(move||{
-            let result=share_transfer::fetch_manifest(&url,&password).map_err(|e|format!("{e:#}"));
-            let _=tx.send(result);
+        if !self.enabled || self.preview_rx.is_some() || self.import_rx.is_some() { return; }
+        self.manifest = None;
+        let (tx, rx) = mpsc::channel();
+        let url = self.import_link.clone();
+        let password = self.import_password.clone();
+        self.preview_rx = Some(rx);
+        self.status = "Comprobando el manifiesto del enlace...".into();
+        thread::spawn(move || {
+            let result = share_transfer::fetch_manifest(&url, &password)
+                .map_err(|err| format!("{err:#}"));
+            let _ = tx.send(result);
         });
     }
-    fn import_link(&mut self, db_path:&Path, library:&Path, covers:&Path) {
-        if self.import_rx.is_some() || self.manifest.is_none(){return;}
-        let (tx,rx)=mpsc::channel();
-        let db=db_path.to_path_buf();
-        let library=library.to_path_buf();
-        let covers=covers.to_path_buf();
-        let url=self.import_link.clone();
-        let password=self.import_password.clone();
-        self.import_rx=Some(rx);
-        self.status="Descargando, verificando e importando la ficha...".into();
-        thread::spawn(move||{
-            let result=share_transfer::import_shared(&url,&password,&db,&library,&covers)
-                .map_err(|e|format!("{e:#}"));
-            let _=tx.send(result);
+    fn begin_import(&mut self, db_path: &Path, library: &Path, covers: &Path) {
+        if !self.enabled || self.import_rx.is_some() || self.manifest.is_none() { return; }
+        let (tx, rx) = mpsc::channel();
+        let db = db_path.to_path_buf();
+        let library = library.to_path_buf();
+        let covers = covers.to_path_buf();
+        let url = self.import_link.clone();
+        let password = self.import_password.clone();
+        self.import_rx = Some(rx);
+        self.confirm_import = false;
+        self.status = "Descargando, verificando e importando la ficha...".into();
+        thread::spawn(move || {
+            let result = share_transfer::import_shared(&url, &password, &db, &library, &covers)
+                .map_err(|err| format!("{err:#}"));
+            let _ = tx.send(result);
         });
     }
-    /// Call once per frame; returns an imported product ID for the main catalog.
-    pub fn poll(&mut self,ctx:&egui::Context) -> Option<Result<i64,String>> {
-        if let Some(result)=self.share_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
-            self.share_rx=None;
+
+    /// Returns imported product ID to navigate to the new/updated catalog entry.
+    pub fn poll(&mut self, ctx: &egui::Context) -> Option<Result<i64, String>> {
+        if let Some(result) = self.share_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.share_rx = None;
+            let asset_id = self.pending_asset.take();
             match result {
-                Ok(session)=>{
-                    if self.enabled {
-                        self.status="Enlace creado. Solo funcionará mientras la sesión esté activa.".into();
-                        self.active_asset=self.share_target;
-                        self.active=Some(session);
+                Ok(session) => {
+                    if self.enabled && self.share_target.is_some() && self.share_target == asset_id {
+                        self.status = "Enlace creado. Puedes copiarlo desde la cabecera de la ficha.".into();
+                        self.active_asset = asset_id;
+                        self.active = Some(session);
+                        self.share_target = None;
                     } else {
-                        // Revoking the opt-in while startup ran must stop the new tunnel.
                         drop(session);
-                        self.status="Compartición cancelada: función desactivada.".into();
+                        self.status = "Compartición cancelada.".into();
                     }
-                },
-                Err(e)=>self.status=format!("Error al compartir: {e}"),
+                }
+                Err(err) => self.status = format!("Error al compartir: {err}"),
             }
         }
-        if let Some(result)=self.preview_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
-            self.preview_rx=None;
+        if let Some(result) = self.preview_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.preview_rx = None;
             match result {
-                Ok(m)=>{self.manifest=Some(m);self.status="Ficha comprobada. Revisa antes de importar.".into();},
-                Err(e)=>{self.manifest=None;self.status=format!("Error al abrir enlace: {e}");},
+                Ok(m) => {
+                    self.manifest = Some(m);
+                    self.status = "Ficha comprobada. Revisa antes de importar.".into();
+                }
+                Err(err) => {
+                    self.manifest = None;
+                    self.status = format!("Error al abrir enlace: {err}");
+                }
             }
         }
-        if let Some(result)=self.import_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
-            self.import_rx=None;
+        if let Some(result) = self.import_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.import_rx = None;
             match result {
-                Ok(id)=>{
-                    self.status="Ficha y archivos importados correctamente.".into();
-                    self.import_open=false;
-                    self.manifest=None;
+                Ok(id) => {
+                    self.status = "Ficha y archivos importados correctamente.".into();
+                    self.import_open = false;
+                    self.confirm_import = false;
+                    self.manifest = None;
                     return Some(Ok(id));
-                },
-                Err(e)=>{
-                    self.status=format!("Error al importar: {e}");
-                    return Some(Err(e));
-                },
+                }
+                Err(err) => {
+                    self.status = format!("Error al importar: {err}");
+                    return Some(Err(err));
+                }
             }
         }
         if self.active.as_ref().is_some_and(ShareSession::expired) {
-            self.active=None;
-            self.active_asset=None;
-            self.share_target=None;
-            self.status="El enlace ha caducado y el túnel se ha detenido.".into();
+            self.stop_share();
+            self.status = "El enlace ha caducado y el túnel se ha detenido.".into();
         }
         if self.share_rx.is_some() || self.preview_rx.is_some() || self.import_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(140));
@@ -179,130 +318,213 @@ impl SharingUi {
         }
         None
     }
-    pub fn render(&mut self,ctx:&egui::Context,data_dir:&Path,db_path:&Path,
-        library:&Path,covers:&Path) {
-        if self.share_target.is_some() || self.active.is_some() {
-            let mut visible=true;
-            let mut share=false;
-            let mut stop=false;
-            egui::Window::new("Compartir asset temporalmente")
-                .id(egui::Id::new("asset-sharing-dialog"))
-                .open(&mut visible).resizable(false).default_width(460.0)
-                .show(ctx,|ui|{
-                    if let Some(active)=self.active.as_ref(){
-                        ui.label("Enlace HTTPS activo (cualquiera con el enlace y la contraseña puede acceder):");
-                        ui.horizontal_wrapped(|ui|{
-                            ui.label(RichText::new(&active.url).monospace());
-                            if ui.button("Copiar enlace").clicked(){ui.ctx().copy_text(active.url.clone());}
+
+    pub fn render(
+        &mut self,
+        ctx: &egui::Context,
+        data_dir: &Path,
+        db_path: &Path,
+        library: &Path,
+        covers: &Path,
+    ) {
+        if !self.enabled { return; }
+        // The product link is copied from the detail header. The modal only
+        // configures a temporary share and then closes after successful startup.
+        if self.share_target.is_some() && !self.consent {
+            let mut create = false;
+            let mut cancel = false;
+            let close = workflow_modal(ctx, "asset-share-setup", "Compartir ficha temporalmente", |ui| {
+                dialog_text(ui, "Se compartirán esta ficha y todos sus archivos vinculados. Comparte solo archivos cuya licencia permita redistribuirlos.");
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.label(tr("Caducidad:"));
+                    egui::ComboBox::from_id_salt("share-expiry")
+                        .selected_text(format!("{} {}", self.minutes, tr("min")))
+                        .show_ui(ui, |ui| {
+                            for minutes in [15_u64, 30, 60, 180, 360] {
+                                ui.selectable_value(&mut self.minutes, minutes, format!("{minutes} {}", tr("min")));
+                            }
                         });
-                        if self.active_asset!=self.share_target {
-                            ui.label("Primero detén la sesión actual para compartir otro producto.");
-                        }
-                        if ui.button("Detener y revocar enlace").clicked(){stop=true;}
-                    } else {
-                        ui.label("Se compartirán la ficha y todos sus archivos vinculados. Asegúrate de tener permiso para redistribuirlos.");
-                        ui.horizontal(|ui|{
-                            ui.label("Caducidad:");
-                            egui::ComboBox::from_id_salt("share-expiry")
-                                .selected_text(format!("{} min",self.minutes))
-                                .show_ui(ui,|ui|{
-                                    for time in [15_u64,30,60,180,360] {
-                                        ui.selectable_value(&mut self.minutes,time,format!("{time} min"));
-                                    }
-                                });
-                        });
-                        ui.horizontal(|ui|{
-                            ui.label("Descargas por archivo:");
-                            egui::ComboBox::from_id_salt("share-limit")
-                                .selected_text(if self.max_downloads==0{"Sin límite".into()}
-                                    else{self.max_downloads.to_string()})
-                                .show_ui(ui,|ui|{
-                                    for (count,label) in [(1,"1"),(3,"3"),(10,"10"),(0,"Sin límite")] {
-                                        ui.selectable_value(&mut self.max_downloads,count,label);
-                                    }
-                                });
-                        });
-                        ui.label("Contraseña adicional (opcional, se entrega por separado):");
-                        ui.add(egui::TextEdit::singleline(&mut self.password).password(true));
-                        if self.share_rx.is_some(){ui.horizontal(|ui|{ui.spinner();ui.label("Preparando enlace...");});}
-                        if ui.add_enabled(self.share_rx.is_none(),
-                            egui::Button::new("Crear enlace temporal")).clicked(){share=true;}
-                    }
-                    if !self.status.is_empty(){ui.label(&self.status);}
                 });
-            if stop {
-                self.active=None;
-                self.active_asset=None;
-                self.share_target=None;
-                self.status="Enlace revocado.".into();
-            }
-            if share {
-                if share_transfer::component_present(data_dir) {
-                    self.begin_share(data_dir,db_path,false);
-                } else {
-                    self.consent=true;
+                ui.horizontal(|ui| {
+                    ui.label(tr("Descargas por archivo:"));
+                    egui::ComboBox::from_id_salt("share-limit")
+                        .selected_text(if self.max_downloads == 0 {
+                            tr("Sin límite").to_owned()
+                        } else { self.max_downloads.to_string() })
+                        .show_ui(ui, |ui| {
+                            for count in [1, 3, 10, 0] {
+                                let label = if count == 0 { tr("Sin límite").to_owned() } else { count.to_string() };
+                                ui.selectable_value(&mut self.max_downloads, count, label);
+                            }
+                        });
+                });
+                ui.label(tr("Contraseña adicional (opcional, se entrega por separado):"));
+                ui.add(egui::TextEdit::singleline(&mut self.password).password(true));
+                if self.share_rx.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(tr_message(&self.status).as_ref());
+                    });
+                } else if self.status.starts_with("Error al compartir: ") {
+                    dialog_text(ui, &self.status);
                 }
-            }
-            if !visible {self.share_target=None;}
-        }
-        if self.consent {
-            let mut visible=true;
-            let mut accepted=false;
-            let mut cancelled=false;
-            egui::Window::new("Permiso para descargar Cloudflare Tunnel")
-                .collapsible(false).resizable(false)
-                .open(&mut visible).default_width(490.0)
-                .show(ctx,|ui|{
-                    ui.label("Esta función es opcional y está desactivada por defecto.");
-                    ui.label(format!("Para compartir, SZKura necesita descargar cloudflared {} desde los lanzamientos oficiales de Cloudflare en GitHub.",share_transfer::CLOUDFLARED_VERSION));
-                    ui.label("La app comprobará su SHA-256 oficial antes de ejecutarlo y lo guardará localmente. No necesita permisos de administrador.");
-                    ui.label("Sin tu confirmación no se descargará nada. Podrás eliminarlo desde Ajustes.");
-                    ui.horizontal(|ui|{
-                        if ui.button("Cancelar").clicked(){cancelled=true;}
-                        if ui.button("Acepto: descargar y compartir").clicked(){accepted=true;}
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if modal_button(ui, "Crear enlace temporal", true, self.share_rx.is_none()) {
+                            create = true;
+                        }
+                        ui.add_space(8.0);
+                        if modal_button(ui, "Cancelar", false, true) {
+                            cancel = true;
+                        }
                     });
                 });
-            if accepted {self.begin_share(data_dir,db_path,true);}
-            if cancelled || !visible {self.consent=false;}
+            });
+            if close || cancel {
+                self.share_target = None; // In-flight result is discarded and tunnel stopped.
+            } else if create {
+                if share_transfer::component_present(data_dir) {
+                    self.begin_share(data_dir, db_path, false);
+                } else {
+                    self.consent = true;
+                }
+            }
         }
-        if self.import_open {
-            let mut visible=true;
-            let mut preview=false;
-            let mut receive=false;
-            egui::Window::new("Importar ficha desde enlace SZKura")
-                .open(&mut visible).default_width(530.0)
-                .show(ctx,|ui|{
-                    ui.label("Pega el enlace HTTPS que te ha enviado otra instalación de SZKura:");
-                    if ui.text_edit_singleline(&mut self.import_link).changed(){self.manifest=None;}
-                    ui.label("Contraseña, si el remitente estableció una:");
-                    if ui.add(egui::TextEdit::singleline(&mut self.import_password)
-                        .password(true)).changed(){self.manifest=None;}
-                    if ui.add_enabled(self.preview_rx.is_none() && self.import_rx.is_none(),
-                        egui::Button::new("Examinar enlace")).clicked(){preview=true;}
-                    if let Some(m)=&self.manifest {
-                        ui.separator();
-                        ui.label(RichText::new(&m.title).strong());
-                        ui.label(format!("Creador: {} · Categoría: {}",m.creator,m.category));
-                        ui.label(format!("Avatares: {}",m.avatars.join(", ")));
-                        ui.label(format!("{} archivos · {} bytes",m.files.len(),
-                            m.files.iter().map(|f|f.size).sum::<u64>()));
-                        egui::ScrollArea::vertical().max_height(115.0).show(ui,|ui|{
-                            for f in &m.files {ui.label(format!("{} ({})",f.name,f.size));}
-                        });
-                        ui.label("La importación conservará los metadatos existentes si ya tienes el producto de BOOTH. No se ejecutarán los archivos recibidos.");
-                        if ui.add_enabled(self.import_rx.is_none(),
-                            egui::Button::new("Confirmar e importar ficha y archivos")).clicked(){
-                            receive=true;
+        if self.consent {
+            let choice = confirmation_dialog(
+                ctx,
+                "szkura-tunnel-consent",
+                "Descargar Cloudflare Tunnel",
+                "Descargar y compartir",
+                ConfirmTone::Primary,
+                self.share_rx.is_none(),
+                |ui| {
+                    dialog_subject(ui, &format!("cloudflared {}", share_transfer::CLOUDFLARED_VERSION));
+                    ui.add_space(8.0);
+                    dialog_text(ui, "Descarga opcional desde los lanzamientos oficiales de Cloudflare en GitHub.");
+                    ui.add_space(7.0);
+                    dialog_text(ui, "SZKura verificará SHA-256, guardará el ejecutable localmente y no necesitará permisos de administrador.");
+                    ui.add_space(7.0);
+                    dialog_text(ui, "Sin aceptar no se descarga nada. Puedes eliminar el componente desde Configuración.");
+                },
+            );
+            match choice {
+                ConfirmChoice::Accept => self.begin_share(data_dir, db_path, true),
+                ConfirmChoice::Cancel => self.consent = false,
+                ConfirmChoice::Pending => {}
+            }
+        }
+        if self.import_open && !self.confirm_import {
+            let mut preview = false;
+            let mut request_confirm = false;
+            let mut cancel = false;
+            let working = self.preview_rx.is_some() || self.import_rx.is_some();
+            let close = workflow_modal(ctx, "asset-import-flow", "Importar ficha desde enlace SZKura", |ui| {
+                dialog_text(ui, "Pega el enlace HTTPS que te ha enviado otra instalación de SZKura:");
+                if ui.add_enabled(!working, egui::TextEdit::singleline(&mut self.import_link)
+                    .hint_text(tr("Enlace HTTPS de SZKura"))).changed() {
+                    self.manifest = None;
+                }
+                ui.label(tr("Contraseña, si el remitente estableció una:"));
+                if ui.add_enabled(!working, egui::TextEdit::singleline(&mut self.import_password)
+                    .password(true)).changed() {
+                    self.manifest = None;
+                }
+                if let Some(m) = &self.manifest {
+                    ui.add_space(9.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    dialog_subject(ui, &m.title);
+                    ui.label(format!("{}: {} · {}: {}",
+                        tr("Creador"), m.creator, tr("Categoría"), tr(&m.category)));
+                    ui.label(format!("{}: {}", tr("Avatares"), m.avatars.join(", ")));
+                    ui.label(format!("{} {} · {} {}",
+                        m.files.len(), tr("archivos"), m.files.iter().map(|f| f.size).sum::<u64>(), tr("bytes")));
+                    egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+                        for file in &m.files {
+                            ui.label(format!("{} ({})", file.name, file.size));
                         }
-                    }
-                    if self.preview_rx.is_some() || self.import_rx.is_some(){
-                        ui.horizontal(|ui|{ui.spinner();ui.label("Procesando transferencia...");});
-                    }
-                    if !self.status.is_empty(){ui.label(&self.status);}
+                    });
+                    dialog_text(ui, "Si la ficha ya existe, se conservarán sus metadatos locales. Los archivos recibidos no se ejecutarán.");
+                }
+                if working {
+                    ui.horizontal(|ui| { ui.spinner(); ui.label(tr_message(&self.status).as_ref()); });
+                } else if !self.status.is_empty() {
+                    dialog_text(ui, &self.status);
+                }
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.manifest.is_some() {
+                            if modal_button(ui, "Continuar con la importación", true, !working) {
+                                request_confirm = true;
+                            }
+                        } else if modal_button(ui, "Examinar enlace", true, !working && !self.import_link.trim().is_empty()) {
+                            preview = true;
+                        }
+                        ui.add_space(8.0);
+                        if modal_button(ui, "Cancelar", false, !working) {
+                            cancel = true;
+                        }
+                    });
                 });
-            if preview {self.inspect_link();}
-            if receive {self.import_link(db_path,library,covers);}
-            if !visible && self.import_rx.is_none() {self.import_open=false;}
+            });
+            if (cancel || close) && !working {
+                self.import_open = false;
+                self.manifest = None;
+            } else if preview {
+                self.inspect_link();
+            } else if request_confirm {
+                self.confirm_import = true;
+            }
         }
+        if self.confirm_import && self.import_open {
+            let choice = confirmation_dialog(
+                ctx,
+                "szkura-import-confirm",
+                "Confirmar importación",
+                "Importar ficha y archivos",
+                ConfirmTone::Primary,
+                self.import_rx.is_none(),
+                |ui| {
+                    if let Some(manifest) = &self.manifest {
+                        dialog_subject(ui, &manifest.title);
+                    }
+                    ui.add_space(8.0);
+                    dialog_text(ui, "Se descargarán y verificarán los archivos antes de añadirlos a tu biblioteca.");
+                    ui.add_space(8.0);
+                    dialog_text(ui, "Las fichas BOOTH existentes conservarán sus metadatos. No se ejecutarán los archivos.");
+                },
+            );
+            match choice {
+                ConfirmChoice::Accept => self.begin_import(db_path, library, covers),
+                ConfirmChoice::Cancel => self.confirm_import = false,
+                ConfirmChoice::Pending => {}
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn disabled_feature_has_no_import_or_share_entry_point() {
+        let mut ui = SharingUi::new(false);
+        ui.open_import();
+        ui.open_share(42);
+        assert!(!ui.import_open);
+        assert!(ui.share_target.is_none());
+        assert!(ui.active_url_for(42).is_none());
+        ui.enabled = true;
+        ui.open_import();
+        ui.open_share(42);
+        assert!(ui.import_open);
+        assert_eq!(ui.share_target, Some(42));
     }
 }
