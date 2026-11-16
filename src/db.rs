@@ -177,7 +177,7 @@ impl Catalog {
 
     /// Persist update settings with an explicit key allowlist.
     pub fn update_preference(&mut self,key:&str,enabled:bool)->Result<()> {
-        if !matches!(key,"check_updates_on_start"|"auto_install_updates"|"delete_sources_after_import") {
+        if !matches!(key,"check_updates_on_start"|"auto_install_updates"|"delete_sources_after_import"|"sharing_enabled") {
             bail!("Clave de configuración desconocida");
         }
         self.conn.execute(
@@ -187,7 +187,7 @@ impl Catalog {
         Ok(())
     }
     pub fn preference(&self,key:&str,default:bool)->Result<bool> {
-        if !matches!(key,"check_updates_on_start"|"auto_install_updates"|"delete_sources_after_import") {
+        if !matches!(key,"check_updates_on_start"|"auto_install_updates"|"delete_sources_after_import"|"sharing_enabled") {
             bail!("Clave de configuración desconocida");
         }
         let value=self.conn.query_row(
@@ -839,15 +839,19 @@ mod tests {
         let (dir,mut db)=test_db();
         assert!(db.preference("check_updates_on_start",true).unwrap());
         assert!(!db.preference("auto_install_updates",false).unwrap());
+        // Sharing must be an opt-in preference that never fails at first launch.
+        assert!(!db.preference("sharing_enabled",false).unwrap());
         db.update_preference("check_updates_on_start",false).unwrap();
         db.update_preference("auto_install_updates",true).unwrap();
         db.update_preference("delete_sources_after_import",true).unwrap();
+        db.update_preference("sharing_enabled",true).unwrap();
         assert!(db.update_preference("unexpected",true).is_err());
         drop(db);
         let db=Catalog::open(&dir.path().join("catalog.sqlite")).unwrap();
         assert!(!db.preference("check_updates_on_start",true).unwrap());
         assert!(db.preference("auto_install_updates",false).unwrap());
         assert!(db.preference("delete_sources_after_import",false).unwrap());
+        assert!(db.preference("sharing_enabled",false).unwrap());
     }
     #[test]
     fn storage_config_and_folders_are_persistent_without_destroying_legacy_paths() {

@@ -1,0 +1,34 @@
+name: Check optional asset transfer
+
+on:
+  push:
+    branches:
+      - feature/opt-in-peer-asset-transfer
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Cargo tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux graphical dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config libwayland-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check compilation and run tests
+        run: cargo test --all-targets
+      - name: Check peer transfer lint
+        run: cargo clippy --all-targets

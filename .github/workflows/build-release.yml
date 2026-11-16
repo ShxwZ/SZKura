@@ -108,9 +108,21 @@ jobs:
           tag="${{ needs.version.outputs.tag }}"
           test -s dist/windows/szkura.exe
           test -s dist/linux/szkura
+          cat > release-notes.md <<'SZKURA_NOTES'
+          ## SZKura alpha
+
+          **Novedades**
+          - Compartir una ficha y sus archivos temporalmente con otra instalación compatible de SZKura mediante HTTPS y Cloudflare Quick Tunnel.
+          - Función opcional y desactivada por defecto. El túnel solo se descarga tras consentimiento explícito y se verifica con SHA-256.
+          - Enlaces temporales con caducidad, límites de descarga y contraseña opcional. La importación requiere SZKura: no hay página ni descarga desde navegador.
+          - Solo una ficha activa a la vez; la cabecera permite identificarla, abrirla o dejar de compartir directamente.
+          - Interfaz ES/EN, mejoras de arranque y diagnóstico, y ejecutables Windows x64 / Linux x64 validados en CI.
+
+          **Importante:** Respeta las licencias de los creadores. Los Quick Tunnels de Cloudflare son experimentales y no garantizan disponibilidad ni reanudación de descargas. Comparte el enlace completo solo con personas de confianza.
+          SZKURA_NOTES
           gh release create "$tag" \
             "dist/windows/szkura.exe#SZKura-win-x64.exe" \
             "dist/linux/szkura#SZKura-linux-x64" \
             --repo "${{ github.repository }}" --prerelease \
             --target "${{ github.sha }}" --title "SZKura $tag" \
-            --notes "SZKura alpha: local BOOTH/VRChat library, archive inspector, ES/EN interface, WebP thumbnails and tested Windows/Linux binaries."
+            --notes-file release-notes.md

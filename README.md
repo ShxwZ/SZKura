@@ -13,6 +13,7 @@ SZKura is a lightweight desktop app for keeping track of your [BOOTH](https://bo
 - Fast, optimized WebP covers, blurred backgrounds, and four selectable color palettes.
 - **English and Spanish UI**, with a saved language preference in Settings.
 - Local SQLite data, optional managed storage, and portable `.szkura` backups.
+- **Optional, consent-based temporary sharing** via Cloudflare Tunnel: [SZKura-to-SZKura product import](docs/SHARING.md) using a private app request header (no browser file listing), without manual tunnel installation.
 
 ## Screenshots
 
@@ -118,6 +119,7 @@ SZKura currently supports **English and Spanish**. **Requests for additional lan
 ## Notes
 
 - SZKura uses **public BOOTH product information** when the website permits it. It does not log in to BOOTH or download paid assets.
+- Sharing is disabled by default and only downloads the optional Cloudflare component after explicit consent. Quick Tunnels are experimental; share only files you are authorized to distribute.
 - Encrypted, multipart, or unsupported archives might not open.
 - Only import Unity packages from sources you trust; they can contain scripts.
 - SZKura is independent and **not affiliated** with BOOTH, pixiv, VRChat, or Unity.

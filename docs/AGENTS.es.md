@@ -18,6 +18,7 @@
 - Para confirmaciones y consentimiento, **`ui_support::confirmation_dialog(...)`** y los auxiliares `dialog_subject` / `dialog_text`: el modal centrado del proyecto, con **Cancelar y Escape**, acción principal a la derecha y colores del tema. **No improvisar confirmaciones con `egui::Window`**.
 - Los flujos de varios pasos deben usar el patrón de página principal o un componente compartido, adaptable y tematizado; no ventanas flotantes añadidas sin justificación.
 - Las acciones sobre una ficha van **en la propia ficha**. Para compartir, el botón de copiar enlace debe estar **arriba, en el contexto de esa ficha**, cuando el enlace esté activo, no escondido en un diálogo.
+- Cuando una función solo permita **una operación activa a la vez**, **deshabilitar** la acción que entraría en conflicto. Mostrar siempre en la cabecera el nombre de la ficha activa, un acceso directo a ella y un botón **«Dejar de compartir»** que permita detener el enlace desde el propio aviso. Evitar popups innecesarios: el estado deshabilitado y la cabecera deben explicar la situación sin interrumpir al usuario.
 - Las funcionalidades opcionales deben ser **invisibles e inactivas** hasta que se habiliten. En particular, **«Importar enlace SZKura» no debe mostrarse si compartir/transferir está desactivado en Ajustes**. Desactivar debe detener los procesos de esa función.
 - Todas las operaciones necesitan vuelta o cierre, cancelación, estados de carga, errores y confirmación tras éxito real.
 
@@ -35,6 +36,7 @@
 - Una preferencia nueva necesita cambios tanto en la lista de claves permitidas de **`Catalog::preference`** como en la de **`Catalog::update_preference`**. Añadir pruebas del valor por defecto, actualización, persistencia tras reiniciar y rechazo de claves desconocidas. Ya hubo un error de arranque al olvidar `sharing_enabled`.
 - Las dependencias externas son opcionales salvo decisión expresa. Descargar `cloudflared` solo tras **consentimiento explícito**, desde fuente oficial y verificando SHA-256; nunca al iniciar ni al marcar un ajuste sin confirmar. Reutilizar la copia verificada y permitir eliminarla desde Ajustes.
 - La importación remota exige previsualización y confirmación, integridad/tamaños, validación de rutas, límites, no ejecutar archivos y no sobrescribir fichas existentes sin consentimiento. Evitar revelar tokens o datos privados.
+- Los enlaces de compartición **no deben abrir un listado HTML ni permitir descargas directas desde el navegador**. El servidor exige en todas las rutas una clave aleatoria independiente, transferida desde el fragmento URL mediante la cabecera `X-SZKura-Transfer-Key` que envía la app receptora. Probar con peticiones HTTP locales que, sin la cabecera, todas las rutas responden 404. **Una cabecera no certifica la identidad del programa**; otro cliente HTTP puede reproducir la petición si dispone del enlace completo.
 - Respetar las licencias de BOOTH: adquirir un asset no significa disponer de permiso para redistribuirlo.
 - No bloquear el hilo gráfico con redes, copias grandes, inspección de ZIP u operaciones SQLite costosas.
 

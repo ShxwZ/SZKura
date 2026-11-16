@@ -10,3 +10,5 @@ pub mod updater;
 pub mod package_inspect;
 
 pub mod quick_import;
+
+pub mod share_transfer;

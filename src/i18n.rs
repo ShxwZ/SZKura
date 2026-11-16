@@ -255,6 +255,66 @@ pub fn translate(language:Language,s:&str)->&str {
         "Solo se pueden vincular ZIP, 7z, RAR, UnityPackages o carpetas"=>"Only ZIP, 7z, RAR, UnityPackage files or folders can be attached.",
         "Ubicación solicitada al explorador"=>"Requested file location in the file manager.",
         "Carpeta solicitada al explorador"=>"Requested folder in the file manager.",
+        "Compartir temporalmente (opcional)"=>"Temporary sharing (optional)",
+        "Transferencia HTTPS entre equipos. Cloudflare Tunnel no se descarga al instalar ni al abrir SZKura."=>"HTTPS transfers between computers. Cloudflare Tunnel is not downloaded when installing or launching SZKura.",
+        "Habilitar compartir archivos"=>"Enable file sharing",
+        "Espera a que termine la transferencia para cambiar esta opción."=>"Finish the transfer before changing this setting.",
+        "Componente opcional: instalado (se comprueba SHA-256 antes de ejecutarlo)."=>"Optional component: installed (SHA-256 is checked before running it).",
+        "Componente opcional: no descargado. Se solicitará permiso en el primer uso."=>"Optional component: not downloaded. Permission will be requested on first use.",
+        "Eliminar Cloudflare Tunnel descargado"=>"Remove downloaded Cloudflare Tunnel",
+        "Componente eliminado. Se volverá a solicitar permiso para descargarlo."=>"Component removed. Permission will be requested before downloading it again.",
+        "Descargando y verificando Cloudflare Tunnel..."=>"Downloading and verifying Cloudflare Tunnel...",
+        "Creando enlace temporal..."=>"Creating temporary link...",
+        "Comprobando el manifiesto del enlace..."=>"Checking the link manifest...",
+        "Descargando, verificando e importando la ficha..."=>"Downloading, verifying, and importing the product...",
+        "Enlace activo"=>"Active link",
+        "Copiar enlace"=>"Copy link",
+        "Enlace copiado al portapapeles."=>"Link copied to clipboard.",
+        "Dejar de compartir"=>"Stop sharing",
+        "Compartiendo ahora:"=>"Currently sharing:",
+        "Ver ficha"=>"View product",
+        "Compartir ficha"=>"Share product",
+        "Enlace revocado."=>"Link revoked.",
+        "Enlace creado. Puedes copiarlo desde la cabecera de la ficha."=>"Link created. You can copy it from the product header.",
+        "Enlace cancelado."=>"Link canceled.",
+        "Compartir archivos desactivado."=>"File sharing disabled.",
+        "Enlace no válido"=>"Invalid link",
+        "Solo se admiten enlaces HTTPS de SZKura en trycloudflare.com"=>"Only SZKura HTTPS links on trycloudflare.com are accepted",
+        "El enlace no tiene el formato de transferencia SZKura"=>"This link is not a valid SZKura transfer link",
+        "El enlace requiere una clave de transferencia SZKura válida"=>"This link requires a valid SZKura transfer key",
+        "Solo para importar en SZKura; no hay descarga desde el navegador."=>"Import via SZKura only; browser downloads are unavailable.",
+        "Ficha comprobada. Revisa antes de importar."=>"Product checked. Review before importing.",
+        "Ficha y archivos importados correctamente."=>"Product and files imported successfully.",
+        "El enlace ha caducado y el túnel se ha detenido."=>"The link expired and the tunnel was stopped.",
+        "Compartir ficha temporalmente"=>"Temporarily share product",
+        "Se compartirán esta ficha y todos sus archivos vinculados. Comparte solo archivos cuya licencia permita redistribuirlos."=>"This product and all its linked files will be shared. Only share files you are licensed to redistribute.",
+        "Caducidad:"=>"Expires after:",
+        "min"=>"min",
+        "Descargas por archivo:"=>"Downloads per file:",
+        "Sin límite"=>"Unlimited",
+        "Contraseña adicional (opcional, se entrega por separado):"=>"Extra password (optional; share separately):",
+        "Crear enlace temporal"=>"Create temporary link",
+        "Descargar Cloudflare Tunnel"=>"Download Cloudflare Tunnel",
+        "Descargar y compartir"=>"Download and share",
+        "Descarga opcional desde los lanzamientos oficiales de Cloudflare en GitHub."=>"Optional download from Cloudflare's official GitHub releases.",
+        "SZKura verificará SHA-256, guardará el ejecutable localmente y no necesitará permisos de administrador."=>"SZKura will verify SHA-256 and store the executable locally without administrator privileges.",
+        "Sin aceptar no se descarga nada. Puedes eliminar el componente desde Configuración."=>"Nothing is downloaded without your consent. You can remove the component in Settings.",
+        "Importar ficha desde enlace SZKura"=>"Import product from SZKura link",
+        "Pega el enlace HTTPS que te ha enviado otra instalación de SZKura:"=>"Paste the HTTPS link shared by another SZKura installation:",
+        "Enlace HTTPS de SZKura"=>"SZKura HTTPS link",
+        "Contraseña, si el remitente estableció una:"=>"Password, if the sender set one:",
+        "Creador"=>"Creator",
+        "Avatares"=>"Avatars",
+        "bytes"=>"bytes",
+        "Si la ficha ya existe, se conservarán sus metadatos locales. Los archivos recibidos no se ejecutarán."=>"If the product already exists, its local metadata is preserved. Received files will not be executed.",
+        "Continuar con la importación"=>"Continue to import",
+        "Examinar enlace"=>"Preview link",
+        "Confirmar importación"=>"Confirm import",
+        "Importar ficha y archivos"=>"Import product and files",
+        "Se descargarán y verificarán los archivos antes de añadirlos a tu biblioteca."=>"Files will be downloaded and verified before being added to your library.",
+        "Las fichas BOOTH existentes conservarán sus metadatos. No se ejecutarán los archivos."=>"Existing BOOTH products will retain their metadata. Files will not be executed.",
+        "Importar enlace SZKura"=>"Import SZKura link",
+        "Ficha transferida e importada correctamente"=>"Transferred product imported successfully.",
         _=>s,
     }
 }
@@ -278,7 +338,9 @@ pub fn translate_message(language:Language, message:&str)->std::borrow::Cow<'_,s
     }
     for &(es,en) in MESSAGE_PREFIXES {
         if let Some(tail)=message.strip_prefix(es) {
-            return Cow::Owned(format!("{en}{tail}"));
+            // Translate a known nested error too, without changing paths or
+            // user-supplied text that lacks a translation key.
+            return Cow::Owned(format!("{en}{}", translate(language,tail)));
         }
     }
     Cow::Borrowed(message)
@@ -320,6 +382,12 @@ pub fn tr_message(message:&str)->std::borrow::Cow<'_,str>{
     translate_message(selected(),message)
 }
 const MESSAGE_PREFIXES:&[(&str,&str)]=&[
+    ("Error al compartir: ","Sharing error: "),
+    ("Error al abrir enlace: ","Could not open link: "),
+    ("Error al importar: ","Could not import: "),
+    ("No se pudo guardar la preferencia: ","Could not save preference: "),
+    ("No se pudo eliminar el componente: ","Could not remove component: "),
+    ("Error en transferencia: ","Transfer error: "),
     ("Error reabriendo la BD restaurada: ","Error reopening restored database: "),
     ("Error al desvincular: ","Could not unlink file: "),
     ("Ficha eliminada, pero falló la actualización del catálogo: ","Entry removed, but reloading the catalog failed: "),
@@ -382,6 +450,36 @@ mod tests{
         assert_eq!(Language::from_id("es"),Some(Language::Spanish));
         assert_eq!(Language::from_id("en"),Some(Language::English));
         assert_eq!(Language::from_id("xx"),None);
+    }
+    #[test]
+    fn transfer_ui_is_translated_in_english_and_spanish() {
+        for (spanish,english) in [
+            ("Importar enlace SZKura","Import SZKura link"),
+            ("Compartir ficha","Share product"),
+            ("Copiar enlace","Copy link"),
+            ("Descargar y compartir","Download and share"),
+            ("Confirmar importación","Confirm import"),
+            ("Habilitar compartir archivos","Enable file sharing"),
+            ("Crear enlace temporal","Create temporary link"),
+            ("Dejar de compartir","Stop sharing"),
+            ("Compartiendo ahora:","Currently sharing:"),
+            ("Enlace activo","Active link"),
+            ("Enlace cancelado.","Link canceled."),
+            ("Compartir archivos desactivado.","File sharing disabled."),
+            ("Ver ficha","View product"),
+        ] {
+            assert_eq!(translate(Language::Spanish,spanish),spanish);
+            assert_eq!(translate(Language::English,spanish),english);
+        }
+        assert_eq!(
+            translate_message(Language::English,"Error al compartir: conexión fallida"),
+            "Sharing error: conexión fallida"
+        );
+        assert_eq!(
+            translate_message(Language::English,
+                "Error al abrir enlace: El enlace requiere una clave de transferencia SZKura válida"),
+            "Could not open link: This link requires a valid SZKura transfer key"
+        );
     }
     #[test]
     fn navigation_and_settings_translate_without_changing_catalog_ids(){
