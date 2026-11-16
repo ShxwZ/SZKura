@@ -143,9 +143,9 @@ struct Offer {
 
 fn valid_filename(s: &str) -> bool {
     !s.is_empty() && s.len() <= 240 && s != "." && s != ".." &&
-        !s.contains(['/', '\\', '\0', '\r', '\n', ':']) &&
+        !s.chars().any(|c| matches!(c,'/'|'\\'|'\0'|'\r'|'\n'|':')) &&
         !s.chars().any(char::is_control) &&
-        Path::new(s).file_name().is_some_and(|part| part == s)
+        Path::new(s).file_name().is_some_and(|part| part.to_string_lossy() == s)
 }
 fn validate_manifest(m: &Manifest) -> Result<()> {
     if m.version != 1 || m.title.trim().is_empty() || m.title.len() > 250 ||
@@ -300,7 +300,9 @@ pub fn import_shared(link: &str, password: &str, db_path: &Path,
     let temp = tempfile::tempdir_in(library).context("No se pudo preparar descarga temporal")?;
     let mut paths = Vec::new();
     for file in &manifest.files {
-        let target = temp.path().join(format!("{}-{}", file.index, file.name));
+        let folder = temp.path().join(file.index.to_string());
+        fs::create_dir(&folder)?;
+        let target = folder.join(&file.name);
         let mut url = base.clone();
         url.set_path(&format!("{}/file/{}", base.path(),file.index));
         download_verified(&client,url,password,&target,file.size,&file.sha256)?;
@@ -361,10 +363,12 @@ pub fn import_shared(link: &str, password: &str, db_path: &Path,
 
 pub struct ShareSession {
     pub url: String,
+    expires: Instant,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Child>>,
 }
 impl ShareSession {
+    pub fn expired(&self) -> bool { Instant::now() >= self.expires }
     pub fn stop(&self) {
         self.stop.store(true,Ordering::Relaxed);
         if let Ok(mut process) = self.child.lock() {
@@ -488,8 +492,15 @@ pub fn start_share(data_dir: &Path, db_path: &Path, asset_id: i64,
     let (tx,rx)=mpsc::channel();
     thread::spawn(move||{
         use std::io::{BufRead,BufReader};
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if let Some(url)=find_cloudflare_url(&line) { let _=tx.send(url);break; }
+        let mut reported = false;
+        // Continue draining logs after URL discovery so cloudflared cannot block on stderr.
+        for line in BufReader::new(stderr).lines().map_while(std::result::Result::ok) {
+            if !reported {
+                if let Some(url)=find_cloudflare_url(&line) {
+                    let _=tx.send(url);
+                    reported=true;
+                }
+            }
         }
     });
     let child = Arc::new(Mutex::new(child));
@@ -525,5 +536,48 @@ pub fn start_share(data_dir: &Path, db_path: &Path, asset_id: i64,
             let _ = process.wait();
         }
     });
-    Ok(ShareSession {url,stop,child})
+    Ok(ShareSession {url,expires,stop,child})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn public_link_validation_rejects_ssrf_and_invalid_tokens() {
+        let token="a".repeat(64);
+        assert!(parse_public_url(&format!("https://test.trycloudflare.com/s/{token}")).is_ok());
+        for url in [
+            format!("http://test.trycloudflare.com/s/{token}"),
+            format!("https://test.trycloudflare.com.evil.org/s/{token}"),
+            format!("https://localhost/s/{token}"),
+            format!("https://test.trycloudflare.com/s/{token}/../../etc"),
+            "https://test.trycloudflare.com/s/123".into(),
+        ] { assert!(parse_public_url(&url).is_err(),"{url}"); }
+    }
+    #[test]
+    fn manifest_rejects_traversal_and_bad_extensions() {
+        let mut m=Manifest {
+            version:1,title:"Sample".into(),creator:"Shop".into(),
+            category:"Ropa".into(),tags:String::new(),description:String::new(),
+            avatars:vec!["MAYO".into()],booth_url:String::new(),
+            nsfw:false,cover:None,files:vec![TransferFile {
+                index:0,name:"outfit.zip".into(),size:123,
+                sha256:"f".repeat(64),
+            }],
+        };
+        assert!(validate_manifest(&m).is_ok());
+        m.files[0].name="../../secret.zip".into();
+        assert!(validate_manifest(&m).is_err());
+        m.files[0].name="secret.exe".into();
+        assert!(validate_manifest(&m).is_err());
+        m.files[0].name="outfit.zip".into();
+        m.files[0].size=MAX_FILE_BYTES+1;
+        assert!(validate_manifest(&m).is_err());
+    }
+    #[test]
+    fn finds_cloudflare_address_from_process_log() {
+        assert_eq!(find_cloudflare_url(
+            "INF | https://friendly-owl.trycloudflare.com |"
+        ).as_deref(),Some("https://friendly-owl.trycloudflare.com"));
+    }
 }
