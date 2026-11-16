@@ -113,4 +113,14 @@ jobs:
             "dist/linux/szkura#SZKura-linux-x64" \
             --repo "${{ github.repository }}" --prerelease \
             --target "${{ github.sha }}" --title "SZKura $tag" \
-            --notes "SZKura alpha: local BOOTH/VRChat library, archive inspector, ES/EN interface, WebP thumbnails and tested Windows/Linux binaries."
+            --notes "SZKura alpha — biblioteca local BOOTH/VRChat (Windows x64 y Linux x64).
+
+Novedades:
+- Compartir temporalmente una ficha y sus archivos con otra instalación de SZKura, mediante HTTPS y Cloudflare Quick Tunnel.
+- Función opcional, desactivada por defecto. Descarga de Cloudflare Tunnel solo tras aceptar expresamente; ejecutable verificado mediante SHA-256.
+- Enlaces temporales con caducidad, límite de descargas y contraseña adicional opcional. Sin página de descargas en navegador: el receptor debe usar una versión compatible de SZKura.
+- Una ficha compartida a la vez. La barra superior muestra cuál y permite verla o dejar de compartir directamente.
+- Interfaz en español e inglés y mejoras de inicio y diagnóstico de errores.
+- Compilaciones probadas para Windows y Linux.
+
+Avisos: respeta la licencia de cada asset. Cloudflare Quick Tunnel es experimental, requiere conexión y no garantiza disponibilidad ni reanudación de archivos. El enlace completo es una credencial: compártelo solo con destinatarios de confianza."
