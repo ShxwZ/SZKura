@@ -204,6 +204,7 @@ pub fn translate(language:Language,s:&str)->&str {
         "Dimensiones de imagen no admitidas"=>"Image dimensions unsupported",
         "Extraer y abrir"=>"Extract and open",
         "Ver carpetas en Unity"=>"View Unity folders",
+        "Ocultar carpetas en Unity"=>"Hide Unity folders",
         "Carpetas de importación en Unity"=>"Unity import folders",
         "Carpetas principales"=>"Main folders",
         "Carpetas exactas"=>"Exact folders",
@@ -496,6 +497,7 @@ mod tests{
     fn unity_package_path_preview_is_translated() {
         for (es, en) in [
             ("Ver carpetas en Unity", "View Unity folders"),
+            ("Ocultar carpetas en Unity", "Hide Unity folders"),
             ("Carpetas de importación en Unity", "Unity import folders"),
             ("Carpetas principales", "Main folders"),
             ("Carpetas exactas", "Exact folders"),
