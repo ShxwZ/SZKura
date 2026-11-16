@@ -116,6 +116,71 @@ pub fn export_labeled_unitypackage(
     })
 }
 
+/// Build (or reuse) a labeled copy within SZKura's separate Unity cache.
+/// The cache key hashes the source bytes *and* the catalog category, so a
+/// changed source or category cannot accidentally reuse a stale export.
+/// This function must run in a worker, never on the egui render thread.
+pub fn cached_labeled_unitypackage(
+    source: &Path, cache: &Path, category: &str
+) -> Result<std::path::PathBuf> {
+    let label = label_for_category(category)?;
+    let metadata = std::fs::metadata(source)
+        .context("No se pudo leer el paquete de origen")?;
+    if !metadata.is_file() || metadata.len()>crate::package_inspect::MAX_PACKAGE_BYTES {
+        bail!("UnityPackage no válido o mayor de 2 GiB");
+    }
+    std::fs::create_dir_all(cache).context("No se pudo crear la caché Unity")?;
+    let mut input = BufReader::new(File::open(source)?);
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0u8;64*1024];
+    loop {
+        let n = input.read(&mut buffer)?;
+        if n==0 { break; }
+        hasher.update(&buffer[..n]);
+    }
+    let key = hasher.finalize().to_hex();
+    let destination=cache.join(format!("labeled-{key}-{label}.unitypackage"));
+    if destination.exists() {
+        let entry=std::fs::symlink_metadata(&destination)?;
+        if !entry.file_type().is_file() || entry.len()==0
+            || entry.len()>crate::package_inspect::MAX_PACKAGE_BYTES {
+            bail!("Copia etiquetada en caché no válida. Vacía la caché Unity");
+        }
+        return Ok(destination);
+    }
+    let used=std::fs::read_dir(cache)?.try_fold(0u64,|sum,entry|{
+        let entry=entry?;
+        let info=entry.file_type()?;
+        if info.is_file() {
+            Ok::<_,std::io::Error>(sum.saturating_add(entry.metadata()?.len()))
+        } else {
+            Ok(sum)
+        }
+    })?;
+    // Be conservative before writing, and verify actual output size below.
+    if used.saturating_add(metadata.len())>crate::package_inspect::MAX_CACHE_BYTES {
+        bail!("La caché Unity supera 4 GiB. Vacíala antes de importar");
+    }
+    match export_labeled_unitypackage(source,&destination,category) {
+        Ok(_) => {},
+        Err(error) if destination.is_file() => {
+            // Another worker may have completed the same content/category key.
+            let target=std::fs::metadata(&destination)?;
+            if target.len()==0 || target.len()>crate::package_inspect::MAX_PACKAGE_BYTES {
+                return Err(error);
+            }
+        },
+        Err(error)=>return Err(error),
+    }
+    let new_size=std::fs::metadata(&destination)?.len();
+    if used.saturating_add(new_size)>crate::package_inspect::MAX_CACHE_BYTES {
+        // Only our own content-addressed output is ever removed here.
+        let _=std::fs::remove_file(&destination);
+        bail!("La caché Unity supera 4 GiB. Vacíala antes de importar");
+    }
+    Ok(destination)
+}
+
 fn member_guid<'a>(path: &'a str, name: &str) -> Option<&'a str> {
     let (guid, member) = path.split_once('/')?;
     if member != name || guid.len() != 32 || !guid.bytes().all(|c|c.is_ascii_hexdigit()) {
@@ -311,6 +376,35 @@ mod tests {
         assert!(export_labeled_unitypackage(&src,&dst,"Ropa").is_err());
         assert_eq!(std::fs::read(dst).unwrap(),b"existing");
     }
+    #[test]
+    fn automatic_import_prepares_cached_labeled_copy_without_changing_source() {
+        let dir=tempfile::tempdir().unwrap();
+        let src=dir.path().join("source.unitypackage");
+        let cache=dir.path().join("cache");
+        fixture(&src,true);
+        let before=std::fs::read(&src).unwrap();
+        let exported=cached_labeled_unitypackage(&src,&cache,"Ropa").unwrap();
+        assert_ne!(exported,src);
+        assert!(exported.is_file());
+        assert_eq!(std::fs::read(&src).unwrap(),before);
+        let labeled=contents(&exported);
+        let src_files=contents(&src);
+        for (name,data) in src_files {
+            if name.ends_with("/asset.meta") {
+                let content=String::from_utf8(labeled[&name].clone()).unwrap();
+                assert!(content.contains("- CreatorTag"));
+                assert!(content.contains("- SZKura_Ropa"));
+            }else{
+                assert_eq!(labeled[&name],data);
+            }
+        }
+        assert_eq!(cached_labeled_unitypackage(&src,&cache,"Ropa").unwrap(),exported);
+        let other=cached_labeled_unitypackage(&src,&cache,"Pelo").unwrap();
+        assert_ne!(other,exported);
+        assert!(String::from_utf8(contents(&other)[&format!("{A}/asset.meta")].clone())
+            .unwrap().contains("- SZKura_Pelo"));
+    }
+
     #[test]
     fn corrupt_package_leaves_no_destination() {
         let dir=tempfile::tempdir().unwrap();
