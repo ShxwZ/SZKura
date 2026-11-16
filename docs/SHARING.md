@@ -1,0 +1,45 @@
+# Compartir assets temporalmente (experimental)
+
+Función opcional y desactivada por defecto. SZKura **no descarga ni ejecuta Cloudflare Tunnel al instalarse, al iniciarse ni al activar la opción en Ajustes**.
+
+## Compartir
+
+1. Configura el almacén local y activa **Configuración → Habilitar compartir archivos**.
+2. Desde una ficha con archivos adjuntos pulsa **Compartir temporalmente**.
+3. Elige caducidad (15-360 minutos), descargas máximas **por archivo** y contraseña opcional.
+4. La primera vez, SZKura muestra un diálogo de consentimiento con origen y finalidad de Cloudflare Tunnel; **Cancelar** no descarga nada. Si aceptas, descarga la versión fijada desde GitHub oficial y verifica su SHA-256 antes de ejecutarla.
+5. Copia el enlace HTTPS. Un receptor puede descargar los archivos desde el navegador o importarlos desde otra instalación SZKura.
+6. Pulsa **Detener y revocar enlace** para desactivar la sesión.
+
+La primera versión comparte la **ficha y todos sus adjuntos**; no ofrece selección individual de archivos. No comparte otras fichas, rutas originales, credenciales, preferencias ni la base de datos completa.
+
+## Importar de SZKura a SZKura
+
+1. En el equipo receptor pulsa **Importar enlace SZKura**.
+2. Pega el enlace y, si la hay, la contraseña compartida por separado.
+3. Usa **Examinar enlace** para revisar metadatos, avatares, lista de adjuntos y tamaños.
+4. Confirma. SZKura descarga los archivos por streaming a archivos temporales, valida tamaños y SHA-256 y los importa al almacenamiento gestionado. No ejecuta ni extrae los archivos.
+5. Si ya existe una ficha con el mismo ID BOOTH, conserva los metadatos locales y añade solo adjuntos nuevos.
+
+La ficha transferida incluye título, creador, descripción, categoría, etiquetas, avatares compatibles, enlace BOOTH, indicador de contenido sensible y portada disponible. No se transfieren favoritos ni ajustes personales.
+
+## Dependencia opcional
+
+El ejecutable queda bajo la subcarpeta components del directorio de datos de SZKura. Se descarga solo tras aceptar, se verifica también antes de cada ejecución y se puede borrar desde Ajustes sin privilegios de administrador. En la primera versión es compatible con Windows x64 y Linux x64.
+
+El componente está fijado a una versión exacta; una actualización requiere modificar la versión y sus hashes en el código y volver a obtener consentimiento del usuario para descargarlo. No hay actualizaciones silenciosas.
+
+## Seguridad y límites
+
+- Servidor local limitado a 127.0.0.1, token aleatorio de 256 bits, caducidad, límite de descargas por archivo y contraseña opcional HTTP Basic sobre HTTPS.
+- En el receptor: validación estricta de enlaces HTTPS de trycloudflare.com, manifiesto versionado, nombres de archivos, extensiones, tamaños y SHA-256.
+- El enlace es un secreto de acceso. No lo publiques y no reutilices contraseñas importantes.
+- Solo puedes compartir assets cuando la licencia o el titular lo permitan. Una compra de BOOTH no autoriza automáticamente a redistribuirla.
+- Cloudflare Quick Tunnels es un servicio para **pruebas y desarrollo**, no garantiza estabilidad para transferencias grandes. Esta primera versión no permite reanudar descargas interrumpidas.
+- Los archivos se envían desde el equipo del emisor a través del proveedor del túnel; SZKura no aloja copias permanentes en un servidor propio.
+
+Documentación de Cloudflare: https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/
+
+## Validación
+
+El workflow CI de esta rama comprueba Rust en Linux y Windows. También hay pruebas de validación de enlaces, manifiestos y detección de URL de túnel. Antes de publicarlo como estable se debe realizar una prueba real entre equipos distintos.
