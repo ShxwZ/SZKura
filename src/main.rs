@@ -2549,8 +2549,10 @@ fn show_unity_paths_result(
                     }
                     if let Ok(unity_label)=unitypackage_labels::label_for_category(category) {
                         ui.add_space(6.0);
-                        ui.label(RichText::new(tr("Al abrir en Unity desde SZKura, esta etiqueta se aplica automáticamente a una copia de caché."))
+                        ui.label(RichText::new(tr("Al abrir en Unity desde SZKura, se etiqueta solo la primera carpeta del paquete o la primera subcarpeta disponible."))
                             .size(12.0).color(colors().text));
+                        ui.label(RichText::new(tr("La etiqueta de carpeta no se hereda por los archivos internos en Unity."))
+                            .size(12.0).color(colors().muted));
                         ui.label(RichText::new(tr("Experimental: genera una copia; no modifica originales ni carpetas de Unity."))
                             .size(12.0).color(colors().muted));
                         ui.horizontal_wrapped(|ui|{
