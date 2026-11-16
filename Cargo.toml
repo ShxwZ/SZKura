@@ -39,6 +39,8 @@ sevenz-rust2 = { version = "=0.25.0", default-features = false }
 # Pure Rust, read-only RAR4/RAR5 decoder (no WinRAR/unrar installation).
 rars = { version = "=0.12.4", default-features = false }
 crc32fast = "1"
+flate2 = "1"
+tar = "0.4"
 # Optional peer transfer. No tunnel binary is bundled or downloaded at startup.
 tiny_http = "0.12"
 rand = "0.8"
