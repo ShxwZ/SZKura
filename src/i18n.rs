@@ -203,6 +203,17 @@ pub fn translate(language:Language,s:&str)->&str {
         "Imagen no válida"=>"Invalid image",
         "Dimensiones de imagen no admitidas"=>"Image dimensions unsupported",
         "Extraer y abrir"=>"Extract and open",
+        "Ver carpetas en Unity"=>"View Unity folders",
+        "Carpetas de importación en Unity"=>"Unity import folders",
+        "Carpetas principales"=>"Main folders",
+        "Carpetas exactas"=>"Exact folders",
+        "Copiar ruta"=>"Copy path",
+        "Rutas originales del paquete; pueden diferir del proyecto Unity actual."=>"Original package paths; they may differ from the current Unity project.",
+        "Examinando rutas del UnityPackage..."=>"Inspecting UnityPackage paths...",
+        "No contiene rutas válidas dentro de Assets/."=>"No valid paths inside Assets/ were found.",
+        "No se pudieron leer las rutas del UnityPackage:"=>"Could not read UnityPackage paths:",
+        "Archivos con ruta en Assets/"=>"Files with an Assets/ path",
+        "Rutas fuera de Assets/ ignoradas"=>"Paths outside Assets/ ignored",
         "Este ZIP está vacío o no contiene archivos seguros."=>"This ZIP is empty or has no safe files.",
         "Cancelar"=>"Cancel",
         "Ficha de ejemplo"=>"Example product",
@@ -480,6 +491,21 @@ mod tests{
                 "Error al abrir enlace: El enlace requiere una clave de transferencia SZKura válida"),
             "Could not open link: This link requires a valid SZKura transfer key"
         );
+    }
+    #[test]
+    fn unity_package_path_preview_is_translated() {
+        for (es, en) in [
+            ("Ver carpetas en Unity", "View Unity folders"),
+            ("Carpetas de importación en Unity", "Unity import folders"),
+            ("Carpetas principales", "Main folders"),
+            ("Carpetas exactas", "Exact folders"),
+            ("Copiar ruta", "Copy path"),
+            ("Examinando rutas del UnityPackage...", "Inspecting UnityPackage paths..."),
+            ("No contiene rutas válidas dentro de Assets/.", "No valid paths inside Assets/ were found."),
+        ] {
+            assert_eq!(translate(Language::Spanish, es), es);
+            assert_eq!(translate(Language::English, es), en);
+        }
     }
     #[test]
     fn navigation_and_settings_translate_without_changing_catalog_ids(){
