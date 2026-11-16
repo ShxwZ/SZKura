@@ -11,6 +11,8 @@ Función opcional y desactivada por defecto. SZKura **no descarga ni ejecuta Clo
 5. Cuando se haya creado, el diálogo se cerrará y aparecerá **Copiar enlace** en la cabecera de la ficha, junto a **Detener compartición**. El receptor **solo podrá importar la ficha y los archivos desde otra instalación compatible de SZKura**. Abrir el enlace en un navegador no muestra una página ni permite descargas.
 6. Pulsa **Detener compartición** en la cabecera de esa ficha para revocar el enlace.
 
+SZKura permite **una sola ficha compartida a la vez**. Mientras el túnel esté activo, la cabecera muestra **Compartiendo ahora: [nombre de la ficha]** y el acceso **Ver ficha compartida**. Si intentas compartir otra ficha, un modal con el nombre de la que ya está activa explica la limitación y ofrece **Ir a ficha compartida**. Desde esa ficha puedes revisar/copiar el enlace o detenerlo, y después compartir otro producto. Cambiar de ficha puede descartar ediciones aún no guardadas; el modal lo advierte.
+
 La primera versión comparte la **ficha y todos sus adjuntos**; no ofrece selección individual de archivos. No comparte otras fichas, rutas originales, credenciales, preferencias ni la base de datos completa.
 
 ## Importar de SZKura a SZKura
