@@ -22,11 +22,22 @@ pub struct LabeledExportReport {
     pub label: String,
 }
 
+/// Unity label names are stable, English-only IDs independent of the UI
+/// language and of the Spanish category IDs persisted in SQLite.
 pub fn label_for_category(category: &str) -> Result<String> {
-    if !crate::db::CATEGORIES.contains(&category) {
-        bail!("Categoría no reconocida en SZKura");
-    }
-    Ok(format!("SZKura_{category}"))
+    let english = match category {
+        "Avatar" => "Avatar",
+        "Ropa" => "Clothing",
+        "Accesorios" => "Accessories",
+        "Pelo" => "Hair",
+        "Texturas" => "Textures",
+        "Animaciones" => "Animations",
+        "Mundos" => "Worlds",
+        "Herramientas" => "Tools",
+        "Otros" => "Other",
+        _ => bail!("Categoría no reconocida en SZKura"),
+    };
+    Ok(format!("SZKura_{english}"))
 }
 
 pub fn export_labeled_unitypackage(
@@ -143,9 +154,9 @@ pub fn cached_labeled_unitypackage(
         hasher.update(&buffer[..n]);
     }
     let key = hasher.finalize().to_hex();
-    // Version the cache key: existing v1 copies labeled *every file* and
-    // must never be reused by the new folder-only import behavior.
-    let destination=cache.join(format!("labeled-folder-v2-{key}-{label}.unitypackage"));
+    // Version the cache key: v1 labeled every file and v2 used Spanish
+    // names. Neither is safe to reuse for English-only folder labels.
+    let destination=cache.join(format!("labeled-folder-en-v3-{key}-{label}.unitypackage"));
     if destination.exists() {
         let entry=std::fs::symlink_metadata(&destination)?;
         if !entry.file_type().is_file() || entry.len()==0
@@ -369,29 +380,41 @@ mod tests {
 
     #[test]
     fn category_is_limited_to_catalog_values() {
-        assert_eq!(label_for_category("Ropa").unwrap(),"SZKura_Ropa");
-        assert_eq!(label_for_category("Pelo").unwrap(),"SZKura_Pelo");
+        for (id,expected) in [
+            ("Avatar","SZKura_Avatar"),
+            ("Ropa","SZKura_Clothing"),
+            ("Accesorios","SZKura_Accessories"),
+            ("Pelo","SZKura_Hair"),
+            ("Texturas","SZKura_Textures"),
+            ("Animaciones","SZKura_Animations"),
+            ("Mundos","SZKura_Worlds"),
+            ("Herramientas","SZKura_Tools"),
+            ("Otros","SZKura_Other"),
+        ] {
+            assert_eq!(label_for_category(id).unwrap(),expected);
+        }
+        assert_eq!(crate::db::CATEGORIES.len(),9);
         assert!(label_for_category("..\nmalicious").is_err());
     }
     #[test]
     fn meta_with_existing_labels_preserves_them_and_guid() {
         let input=format!("fileFormatVersion: 2\nguid: {A}\nlabels:\n- Other\nDefaultImporter:\n  userData: \n");
-        let tagged=String::from_utf8(add_label(input.as_bytes(),"SZKura_Ropa",A).unwrap()).unwrap();
-        assert!(tagged.contains("labels:\n- Other\n- SZKura_Ropa\nDefaultImporter:"));
+        let tagged=String::from_utf8(add_label(input.as_bytes(),"SZKura_Clothing",A).unwrap()).unwrap();
+        assert!(tagged.contains("labels:\n- Other\n- SZKura_Clothing\nDefaultImporter:"));
         assert!(tagged.contains(&format!("guid: {A}")));
-        assert_eq!(add_label(tagged.as_bytes(),"SZKura_Ropa",A).unwrap(),tagged.as_bytes());
+        assert_eq!(add_label(tagged.as_bytes(),"SZKura_Clothing",A).unwrap(),tagged.as_bytes());
     }
     #[test]
     fn metadata_without_labels_gets_native_root_level_label() {
         let input=format!("fileFormatVersion: 2\r\nguid: {A}\r\nDefaultImporter:\r\n  userData: \r\n");
-        let tagged=String::from_utf8(add_label(input.as_bytes(),"SZKura_Ropa",A).unwrap()).unwrap();
-        assert!(tagged.contains(&format!("guid: {A}\r\nlabels:\r\n- SZKura_Ropa\r\nDefaultImporter:")));
+        let tagged=String::from_utf8(add_label(input.as_bytes(),"SZKura_Clothing",A).unwrap()).unwrap();
+        assert!(tagged.contains(&format!("guid: {A}\r\nlabels:\r\n- SZKura_Clothing\r\nDefaultImporter:")));
     }
     #[test]
     fn unsupported_metadata_is_rejected_safely() {
         let input=format!("fileFormatVersion: 2\nguid: {A}\nlabels: [foo,bar]\n");
-        assert!(add_label(input.as_bytes(),"SZKura_Ropa",A).is_err());
-        assert!(add_label(input.as_bytes(),"SZKura_Ropa",B).is_err());
+        assert!(add_label(input.as_bytes(),"SZKura_Clothing",A).is_err());
+        assert!(add_label(input.as_bytes(),"SZKura_Clothing",B).is_err());
     }
     #[test]
     fn exported_package_preserves_unmodified_payloads_and_existing_labels() {
@@ -409,7 +432,7 @@ mod tests {
             if name==format!("{C}/asset.meta") {
                 let s=String::from_utf8(new.get(&name).unwrap().clone()).unwrap();
                 assert!(s.contains("CreatorTag"));
-                assert!(s.contains("SZKura_Ropa"));
+                assert!(s.contains("SZKura_Clothing"));
                 assert!(s.contains(&format!("guid: {C}")));
             } else {
                 // Asset-level labels and other folder metadata are untouched.
@@ -445,7 +468,7 @@ mod tests {
             if name==format!("{C}/asset.meta") {
                 let content=String::from_utf8(labeled[&name].clone()).unwrap();
                 assert!(content.contains("- CreatorTag"));
-                assert!(content.contains("- SZKura_Ropa"));
+                assert!(content.contains("- SZKura_Clothing"));
             }else{
                 assert_eq!(labeled[&name],data);
             }
@@ -454,11 +477,11 @@ mod tests {
         let other=cached_labeled_unitypackage(&src,&cache,"Pelo").unwrap();
         assert_ne!(other,exported);
         assert!(String::from_utf8(contents(&other)[&format!("{C}/asset.meta")].clone())
-            .unwrap().contains("- SZKura_Pelo"));
+            .unwrap().contains("- SZKura_Hair"));
         assert!(!String::from_utf8(contents(&other)[&format!("{A}/asset.meta")].clone())
-            .unwrap().contains("SZKura_Pelo"));
+            .unwrap().contains("SZKura_Hair"));
         // Versioned key ensures the old broad-tagging cache is never reused.
-        assert!(other.file_name().unwrap().to_string_lossy().starts_with("labeled-folder-v2-"));
+        assert!(other.file_name().unwrap().to_string_lossy().starts_with("labeled-folder-en-v3-"));
     }
 
     #[test]
@@ -487,7 +510,7 @@ mod tests {
         for (key,original_bytes) in original {
             if key==format!("{C}/asset.meta") {
                 let text=String::from_utf8(copy[&key].clone()).unwrap();
-                assert!(text.contains("- SZKura_Pelo"));
+                assert!(text.contains("- SZKura_Hair"));
             } else {
                 assert_eq!(copy[&key],original_bytes);
             }
