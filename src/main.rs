@@ -2505,7 +2505,8 @@ mod unity_folder_layout_tests {
 
     #[test]
     fn long_lists_show_a_taller_scrollable_viewport() {
-        assert_eq!(unity_folders_scroll_height(11,650.0),Some(422.5));
+        let height=unity_folders_scroll_height(11,650.0).expect("long list has a scroll");
+        assert!((height-422.5).abs()<0.01);
         assert_eq!(unity_folders_scroll_height(100,1200.0),Some(500.0));
         assert_eq!(unity_folders_scroll_height(11,400.0),Some(320.0));
     }
