@@ -689,8 +689,9 @@ mod tests {
         // The app extracts the second 256-bit secret from #key=... and
         // includes it as a header for the manifest, cover and archive.
         for path in ["/manifest", "/cover", "/file/0"] {
-            let response = client.get(format!("{base}{path}"))
-                .header(TRANSFER_KEY_HEADER,access_key.as_str()).send()?;
+            // Exercise the real receiver helper rather than duplicating its
+            // header-building logic in this regression test.
+            let response = get(&client, Url::parse(&format!("{base}{path}"))?, &access_key, "")?;
             assert!(response.status().is_success(),"{path}: {}",response.status());
         }
         // Even the full private header does not enable a browser landing page.
