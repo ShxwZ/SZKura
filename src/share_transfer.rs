@@ -29,11 +29,11 @@ const MAX_FILES: usize = 32;
 #[cfg(target_os = "windows")]
 const COMPONENT_NAME: &str = "cloudflared-windows-amd64.exe";
 #[cfg(target_os = "windows")]
-const COMPONENT_SHA256: &str = "d521b3bf68982165f0d06d76732f22d9a105ef057ff3ae4c0986f3a23190950f";
+const COMPONENT_SHA256: &str = "2493dbc168923bb3e59e5e7716f71deced92992eea9acd6e9d74f84ac7751343";
 #[cfg(target_os = "linux")]
 const COMPONENT_NAME: &str = "cloudflared-linux-amd64";
 #[cfg(target_os = "linux")]
-const COMPONENT_SHA256: &str = "1d356dac769d0dbf62ebe588c4034824bbff98d5790c2f844cc99e0e2f57462d";
+const COMPONENT_SHA256: &str = "1f99fb518b83dec2ba8d870a7cc991d82a77e6196295a3d2754ba17ab9f91872";
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 const COMPONENT_NAME: &str = "";
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
