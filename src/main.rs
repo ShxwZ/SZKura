@@ -2410,12 +2410,17 @@ fn show_unity_paths_result(
     preview:Option<&UnityPathsPreview>,error:Option<&str>
 ) {
     ui.add_space(9.0);
+    let full_width=ui.available_width();
     egui::Frame::new().fill(colors().card)
         .stroke(egui::Stroke::new(1.0,colors().stroke))
         .corner_radius(8).inner_margin(12).show(ui,|ui|{
+            // The preview is a full-width section of the inspector, not a
+            // floating content-sized card alongside the package list.
+            ui.set_min_width((full_width-24.0).max(1.0));
             ui.label(RichText::new(tr("Carpetas de importación en Unity"))
                 .strong().size(15.0).color(colors().accent));
-            ui.label(RichText::new(label).size(12.0).color(colors().text));
+            ui.add(egui::Label::new(RichText::new(label)
+                .size(12.0).color(colors().text)).truncate()).on_hover_text(label);
             ui.label(RichText::new(tr("Rutas originales del paquete; pueden diferir del proyecto Unity actual."))
                 .size(12.0).color(colors().muted));
             if loading {
@@ -2463,10 +2468,15 @@ fn show_unity_paths_result(
 }
 
 fn unity_folder_row(ui:&mut egui::Ui,folder:&str) {
-    ui.horizontal_wrapped(|ui| {
+    ui.horizontal(|ui| {
         icon(ui,Icon::Archive,colors().accent,13.0);
-        ui.label(RichText::new(folder).size(12.0).color(colors().text));
-        if ui.add(egui::Button::new(tr("Copiar ruta")).min_size(egui::vec2(0.0,30.0)))
+        let copy_width=105.0;
+        let name_width=(ui.available_width()-copy_width-ui.spacing().item_spacing.x)
+            .max(70.0);
+        ui.add_sized([name_width,25.0],egui::Label::new(
+            RichText::new(folder).size(12.0).color(colors().text)
+        ).truncate()).on_hover_text(folder);
+        if ui.add_sized([copy_width,30.0],egui::Button::new(tr("Copiar ruta")))
             .clicked() {
             ui.ctx().copy_text(folder.to_owned());
         }
@@ -2532,24 +2542,35 @@ fn show_zip_tree(
         }
     };
     for file in files {
-        ui.horizontal_wrapped(|ui|{
-            icon(ui,Icon::File,
-                if file.package.is_some(){colors().accent}else{colors().muted},15.0);
-            let text=RichText::new(format!("{}  ({})",
-                file.name,human_size(file.size as i64))).size(12.0)
-                .color(if file.package.is_some(){colors().text}else{colors().muted});
-            ui.add(egui::Label::new(text).wrap()).on_hover_text(&file.name);
+        // The filename is independent of the actions. Long Japanese product
+        // names cannot push a single button onto the next line.
+        ui.vertical(|ui|{
+            ui.spacing_mut().item_spacing.y=3.0;
+            ui.horizontal(|ui|{
+                icon(ui,Icon::File,
+                    if file.package.is_some(){colors().accent}else{colors().muted},15.0);
+                let text=RichText::new(format!("{}  ({})",
+                    file.name,human_size(file.size as i64))).size(12.0)
+                    .color(if file.package.is_some(){colors().text}else{colors().muted});
+                ui.add(egui::Label::new(text).truncate())
+                    .on_hover_text(&file.name);
+            });
             if let Some(package)=&file.package {
-                if ui.add_enabled(!busy && package.size<=package_inspect::MAX_PACKAGE_BYTES,
-                    egui::Button::new(tr("Extraer y abrir"))
-                        .min_size(egui::vec2(0.0,32.0))).clicked(){
-                    *open_package=Some((source.to_path_buf(),package.clone()));
-                }
-                if ui.add_enabled(!busy,
-                    egui::Button::new(tr("Ver carpetas en Unity"))
-                        .min_size(egui::vec2(0.0,32.0))).clicked(){
-                    *inspect_package=Some((source.to_path_buf(),Some(package.clone())));
-                }
+                ui.horizontal(|ui|{
+                    // Two related buttons share a stable action row even when
+                    // file paths are long or contain multibyte characters.
+                    ui.add_space(23.0);
+                    if ui.add_enabled(!busy && package.size<=package_inspect::MAX_PACKAGE_BYTES,
+                        egui::Button::new(tr("Extraer y abrir"))
+                            .min_size(egui::vec2(0.0,32.0))).clicked(){
+                        *open_package=Some((source.to_path_buf(),package.clone()));
+                    }
+                    if ui.add_enabled(!busy,
+                        egui::Button::new(tr("Ver carpetas en Unity"))
+                            .min_size(egui::vec2(0.0,32.0))).clicked(){
+                        *inspect_package=Some((source.to_path_buf(),Some(package.clone())));
+                    }
+                });
             }
         });
     }
