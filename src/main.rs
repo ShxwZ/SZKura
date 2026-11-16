@@ -806,7 +806,8 @@ impl BoothApp {
                                 action(ui,Icon::Plus,"Nuevo producto",true)
                             }).inner;
                             if create{self.start_new();}
-                            if self.configured && ui.button("Importar enlace SZKura").clicked(){
+                            if self.configured && self.sharing.enabled
+                                && action(ui,Icon::Link,"Importar enlace SZKura",false){
                                 self.sharing.open_import();
                             }
                         }
@@ -1016,7 +1017,8 @@ impl BoothApp {
                     });
                 }
                 ui.add_space(3.0);
-                ui.label(RichText::new(format!("{}  /  {}",tr("Producto en tu biblioteca"),asset.title))
+                self.sharing.detail_actions(ui,id,!attachments.is_empty(),busy);
+                 ui.label(RichText::new(format!("{}  /  {}",tr("Producto en tu biblioteca"),asset.title))
                     .color(colors().muted).size(13.0));
                 ui.add_space(14.0);ui.separator();ui.add_space(11.0);
                 egui::ScrollArea::vertical().id_salt("edit-inline-page")
@@ -1058,10 +1060,7 @@ impl BoothApp {
                         ui.horizontal_wrapped(|ui|{
                             if ui.add_enabled(!busy,egui::Button::new(tr("Añadir archivos"))).clicked(){add_files=true;}
                             if ui.add_enabled(!busy,egui::Button::new(tr("Importar carpeta"))).clicked(){add_folder=true;}
-                            if ui.add_enabled(!busy && self.sharing.enabled && !attachments.is_empty(),
-                                egui::Button::new("Compartir temporalmente")).clicked(){
-                                self.sharing.open_share(id);
-                            }
+
                         });
                         let previous=self.delete_sources;
                         if ui.checkbox(&mut self.delete_sources,tr("Enviar los originales a la papelera tras copiar y verificar")).changed(){
