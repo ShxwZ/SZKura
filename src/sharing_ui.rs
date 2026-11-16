@@ -135,23 +135,33 @@ impl SharingUi {
             return;
         }
         let Some(title) = self.active_title.clone() else { return; };
-        let display = if title.chars().count() > 54 {
-            format!("{}…",title.chars().take(54).collect::<String>())
-        } else {
-            title.to_owned()
-        };
         ui.add_space(5.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(tr("Compartiendo ahora:"))
-                .strong().size(12.5).color(theme::colors().accent));
-            ui.label(RichText::new(display).size(12.5).color(theme::colors().text))
-                .on_hover_text(&title);
-            if action(ui, Icon::Link, "Ver ficha", false) {
-                self.navigate_to_active();
-            }
-            if action(ui, Icon::Trash, "Dejar de compartir", false) {
-                self.stop_share();
-            }
+        ui.horizontal(|ui| {
+            // Place the buttons first in a right-to-left layout so they stay
+            // pinned to the right edge, independently of the product title.
+            // The remaining width belongs to the status text on the left.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if action(ui, Icon::Trash, "Dejar de compartir", false) {
+                    self.stop_share();
+                }
+                if action(ui, Icon::Link, "Ver ficha", false) {
+                    self.navigate_to_active();
+                }
+                ui.add_space(12.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 36.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.label(RichText::new(tr("Compartiendo ahora:"))
+                            .strong().size(12.5).color(theme::colors().accent));
+                        // Long Japanese or translated product names use the
+                        // remaining space and show the complete title on hover.
+                        ui.add(egui::Label::new(
+                            RichText::new(&title).size(12.5).color(theme::colors().text)
+                        ).truncate()).on_hover_text(&title);
+                    },
+                );
+            });
         });
     }
     pub fn open_import(&mut self) {
