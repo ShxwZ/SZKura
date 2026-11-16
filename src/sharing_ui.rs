@@ -131,9 +131,15 @@ impl SharingUi {
             self.share_rx=None;
             match result {
                 Ok(session)=>{
-                    self.status="Enlace creado. Solo funcionará mientras la sesión esté activa.".into();
-                    self.active_asset=self.share_target;
-                    self.active=Some(session);
+                    if self.enabled {
+                        self.status="Enlace creado. Solo funcionará mientras la sesión esté activa.".into();
+                        self.active_asset=self.share_target;
+                        self.active=Some(session);
+                    } else {
+                        // Revoking the opt-in while startup ran must stop the new tunnel.
+                        drop(session);
+                        self.status="Compartición cancelada: función desactivada.".into();
+                    }
                 },
                 Err(e)=>self.status=format!("Error al compartir: {e}"),
             }
@@ -160,8 +166,16 @@ impl SharingUi {
                 },
             }
         }
-        if self.share_rx.is_some() || self.preview_rx.is_some() || self.import_rx.is_some(){
+        if self.active.as_ref().is_some_and(ShareSession::expired) {
+            self.active=None;
+            self.active_asset=None;
+            self.share_target=None;
+            self.status="El enlace ha caducado y el túnel se ha detenido.".into();
+        }
+        if self.share_rx.is_some() || self.preview_rx.is_some() || self.import_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(140));
+        } else if self.active.is_some() {
+            ctx.request_repaint_after(Duration::from_secs(1));
         }
         None
     }
