@@ -30,6 +30,7 @@ use szkura::{
     updater::{self,AvailableUpdate},
     package_inspect::{self, ZipPreview, UnityPackage},
     unitypackage_inspect::{self, UnityPathsPreview},
+    unitypackage_labels,
 };
 
 // All surface, foreground and accent colors come from the selected palette.
@@ -1057,6 +1058,7 @@ impl BoothApp {
             (Option<String>,Option<String>,Option<PathBuf>)=(None,None,None);
         let mut open_nested:Option<(PathBuf,UnityPackage)>=None;
         let mut inspect_unity:Option<(PathBuf,Option<UnityPackage>)>=None;
+        let mut export_labeled:Option<(PathBuf,Option<UnityPackage>)>=None;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(24,18)))
             .show(ctx,|ui|{
@@ -1202,10 +1204,13 @@ impl BoothApp {
                                         if ui.button(tr("Desvincular")).clicked(){detach=Some(file.id);}
                                     });
                                     if direct_package && unity_direct_open {
-                                        show_unity_paths_result(ui,&self.unity_paths_label,
+                                        if show_unity_paths_result(ui,&self.unity_paths_label,
                                             self.unity_paths_scan.is_some(),
                                             self.unity_paths_preview.as_ref(),
-                                            self.unity_paths_error.as_deref());
+                                            self.unity_paths_error.as_deref(),
+                                            &asset.category,busy) {
+                                            export_labeled=Some((source.clone(),None));
+                                        }
                                     }
                                     if expanded && is_archive{
                                         ui.add_space(10.0);ui.separator();ui.add_space(7.0);
@@ -1290,10 +1295,19 @@ impl BoothApp {
                                                 });
                                             if self.unity_paths_key.as_ref().is_some_and(|key|
                                                 key.starts_with(&format!("{}|nested|",source.display()))) {
-                                                show_unity_paths_result(ui,&self.unity_paths_label,
+                                                let selected_package=preview.packages.iter()
+                                                    .find(|package|self.unity_paths_key.as_deref()
+                                                        ==Some(unity_paths_id(&source,Some(package)).as_str()))
+                                                    .cloned();
+                                                if show_unity_paths_result(ui,&self.unity_paths_label,
                                                     self.unity_paths_scan.is_some(),
                                                     self.unity_paths_preview.as_ref(),
-                                                    self.unity_paths_error.as_deref());
+                                                    self.unity_paths_error.as_deref(),
+                                                    &asset.category,busy && selected_package.is_some()) {
+                                                    if let Some(package)=selected_package {
+                                                        export_labeled=Some((source.clone(),Some(package)));
+                                                    }
+                                                }
                                             }
                                         }else{
                                             ui.label(RichText::new(tr("No hay vista previa disponible."))
@@ -1337,6 +1351,39 @@ impl BoothApp {
         }
         if let Some((source,package))=inspect_unity{
             self.toggle_unity_paths(source,package);
+        }
+        if let Some((source,package))=export_labeled {
+            let category=asset.category.clone();
+            match unitypackage_labels::label_for_category(&category) {
+                Ok(unity_label)=>{
+                    let package_name=package.as_ref().map(|entry|entry.name.as_str())
+                        .or_else(||source.file_name().and_then(|name|name.to_str()))
+                        .unwrap_or("SZKura");
+                    let stem=Path::new(package_name).file_stem()
+                        .and_then(|part|part.to_str()).unwrap_or("SZKura");
+                    let suggestion=format!("{stem}_{unity_label}.unitypackage");
+                    if let Some(destination)=rfd::FileDialog::new()
+                        .add_filter(tr("UnityPackage"),&["unitypackage"])
+                        .set_file_name(&suggestion).save_file() {
+                        self.launch(move|paths|{
+                            let input=if let Some(entry)=package {
+                                package_inspect::extract_unitypackage_nested(
+                                    &source,&entry,&paths.unity_cache)?
+                            } else {source};
+                            let report=unitypackage_labels::export_labeled_unitypackage(
+                                &input,&destination,&category)?;
+                            Ok(JobResult {
+                                message:format!("{}: {} | {}: {}",
+                                    tr("Copia etiquetada creada"),destination.display(),
+                                    report.label,report.labeled_assets+report.already_labeled),
+                                select_id:Some(id),
+                            })
+                        });
+                    }
+                },
+                Err(error)=>self.status=format!("{}: {error}",
+                    tr("Categoría no válida para etiquetar")),
+            }
         }
         if let Some(path)=show_path{
             match reveal_file(&path){Ok(())=>self.status="Ubicación solicitada al explorador".into(),
@@ -2449,8 +2496,10 @@ fn unity_paths_id(source:&Path,package:Option<&UnityPackage>)->String {
 /// is launched; clipboard buttons copy exact folder names from the package.
 fn show_unity_paths_result(
     ui:&mut egui::Ui,label:&str,loading:bool,
-    preview:Option<&UnityPathsPreview>,error:Option<&str>
-) {
+    preview:Option<&UnityPathsPreview>,error:Option<&str>,
+    category:&str,can_export:bool,
+)->bool {
+    let mut export_requested=false;
     ui.add_space(9.0);
     let full_width=ui.available_width();
     egui::Frame::new().fill(colors().card)
@@ -2490,6 +2539,22 @@ fn show_unity_paths_result(
                             tr("Rutas fuera de Assets/ ignoradas"),preview.skipped_paths))
                             .size(12.0).color(colors().muted));
                     }
+                    if let Ok(unity_label)=unitypackage_labels::label_for_category(category) {
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(tr("Experimental: genera una copia; no modifica originales ni carpetas de Unity."))
+                            .size(12.0).color(colors().muted));
+                        ui.horizontal_wrapped(|ui|{
+                            ui.label(RichText::new(format!("{}: {}",
+                                tr("Etiqueta de la categoría guardada"),unity_label))
+                                .size(12.0).color(colors().accent));
+                            if ui.add_enabled(can_export,egui::Button::new(
+                                tr("Exportar copia etiquetada...")))
+                                .on_hover_text(tr("Conserva GUIDs, rutas y demás etiquetas; importar manualmente en Unity."))
+                                .clicked() {
+                                export_requested=true;
+                            }
+                        });
+                    }
                     ui.label(RichText::new(tr("Carpetas principales")).strong()
                         .color(colors().text).size(13.0));
                     for folder in &preview.main_folders {
@@ -2525,6 +2590,7 @@ fn show_unity_paths_result(
                 }
             }
         });
+    export_requested
 }
 
 /// Keep small lists content-sized and make large lists comfortable to browse.
