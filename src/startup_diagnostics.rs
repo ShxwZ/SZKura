@@ -60,6 +60,9 @@ pub fn report(error: &str) {
 
 /// Register as the first action in main, before creating eframe/egui.
 pub fn install() {
+    // This marker distinguishes a Windows block (no entry into main) from an
+    // application startup crash, even when the GUI has no terminal.
+    let _ = write_error("Arranque de SZKura: entrada en main().");
     INSTALL_HOOK.call_once(|| {
         std::panic::set_hook(Box::new(|info| {
             let message = format!("Error inesperado durante el inicio o ejecución:\n{info}");
