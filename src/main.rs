@@ -2559,11 +2559,16 @@ fn unity_folder_row(ui:&mut egui::Ui,folder:&str) {
         let copy_width=105.0;
         let name_width=(ui.available_width()-copy_width-ui.spacing().item_spacing.x)
             .max(70.0);
-        // Reserve the full column so Copy path stays in one position,
-        // and explicitly left-align the label within that reserved rect.
+        // Reserve the full column for consistent Copy buttons. ui.put()
+        // uses a centered-and-justified layout; instead, put the truncated
+        // label in a left-to-right child anchored to this reserved rectangle.
         let (name_rect,_)=ui.allocate_exact_size(
             egui::vec2(name_width,30.0),egui::Sense::hover());
-        ui.put(name_rect,egui::Label::new(
+        let mut label_ui=ui.new_child(
+            egui::UiBuilder::new().max_rect(name_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center))
+        );
+        label_ui.add(egui::Label::new(
             RichText::new(folder).size(12.0).color(colors().text)
         ).truncate().halign(egui::Align::LEFT)).on_hover_text(folder);
         if ui.add_sized([copy_width,30.0],egui::Button::new(tr("Copiar ruta")))
