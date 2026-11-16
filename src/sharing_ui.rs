@@ -627,6 +627,20 @@ impl SharingUi {
 mod tests {
     use super::*;
     #[test]
+    fn failed_tunnel_start_keeps_product_title_for_retry() {
+        let mut ui = SharingUi::new(true);
+        ui.open_share(21,"Original title");
+        let (tx, rx) = mpsc::channel();
+        ui.share_rx = Some(rx);
+        ui.pending_asset = Some(21);
+        tx.send(Err("offline".to_owned())).unwrap();
+        assert!(ui.poll(&egui::Context::default()).is_none());
+        assert_eq!(ui.share_target,Some(21));
+        assert_eq!(ui.share_target_title.as_deref(),Some("Original title"));
+        assert!(ui.status.starts_with("Error al compartir:"));
+    }
+
+    #[test]
     fn sharing_another_product_shows_active_notice_and_navigates_once() {
         let mut ui = SharingUi::new(true);
         // Model an existing active session without starting cloudflared.
