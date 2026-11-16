@@ -354,7 +354,8 @@ impl SharingUi {
                     }
                 }
                 Err(err) => {
-                    self.share_target_title = None;
+                    // Keep the selected product title when creation fails:
+                    // the user can retry without reopening the share dialog.
                     self.status = format!("Error al compartir: {err}");
                 },
             }
@@ -659,5 +660,6 @@ mod tests {
         ui.open_share(42,"A product");
         assert!(ui.import_open);
         assert_eq!(ui.share_target, Some(42));
+        assert_eq!(ui.share_target_title.as_deref(),Some("A product"));
     }
 }
