@@ -306,7 +306,19 @@ pub fn import_shared(link: &str, password: &str, db_path: &Path,
         let mut url = base.clone();
         url.set_path(&format!("{}/file/{}", base.path(),file.index));
         download_verified(&client,url,password,&target,file.size,&file.sha256)?;
-        // The temporary prefix must not change the supported file extension.
+        // Reject damaged archives before adding any product to the local catalog.
+        let extension = target.extension().and_then(|s|s.to_str()).unwrap_or("").to_ascii_lowercase();
+        match extension.as_str() {
+            "zip" => {
+                let archive = zip::ZipArchive::new(File::open(&target)?)
+                    .context("ZIP remoto dañado")?;
+                if archive.len() > 100_000 { bail!("ZIP remoto con demasiadas entradas"); }
+            },
+            "7z" => { crate::package_inspect::sevenzip_count(&target)?; },
+            "rar" => { crate::package_inspect::rar_count(&target)?; },
+            "unitypackage" => {},
+            _ => bail!("Extensión no permitida en la transferencia"),
+        }
         paths.push(target);
     }
     let mut cover_bytes = None;
@@ -483,7 +495,11 @@ pub fn start_share(data_dir: &Path, db_path: &Path, asset_id: i64,
     let mut token_bytes = [0_u8;32];
     OsRng.fill_bytes(&mut token_bytes);
     let token = token_bytes.iter().map(|b|format!("{b:02x}")).collect::<String>();
+    // Isolate SZKura Quick Tunnels from the user's global ~/.cloudflared/config.yml.
+    let tunnel_config = data_dir.join("components").join("quick-tunnel.yml");
+    fs::write(&tunnel_config, b"")?;
     let mut child = Command::new(executable)
+        .arg("--config").arg(&tunnel_config)
         .arg("tunnel").arg("--no-autoupdate").arg("--url")
         .arg(format!("http://127.0.0.1:{}",addr.port()))
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
