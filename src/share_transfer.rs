@@ -605,12 +605,20 @@ mod tests {
     #[test]
     fn public_link_validation_rejects_ssrf_and_invalid_tokens() {
         let token="a".repeat(64);
-        assert!(parse_public_url(&format!("https://test.trycloudflare.com/s/{token}")).is_ok());
+        let access_key="b".repeat(64);
+        let link=format!("https://test.trycloudflare.com/s/{token}#key={access_key}");
+        let (base,parsed_key)=parse_public_url(&link).unwrap();
+        assert_eq!(base.as_str(),format!("https://test.trycloudflare.com/s/{token}"));
+        assert_eq!(parsed_key,access_key);
         for url in [
-            format!("http://test.trycloudflare.com/s/{token}"),
-            format!("https://test.trycloudflare.com.evil.org/s/{token}"),
-            format!("https://localhost/s/{token}"),
-            format!("https://test.trycloudflare.com/s/{token}/../../etc"),
+            format!("http://test.trycloudflare.com/s/{token}#key={access_key}"),
+            format!("https://test.trycloudflare.com.evil.org/s/{token}#key={access_key}"),
+            format!("https://localhost/s/{token}#key={access_key}"),
+            format!("https://test.trycloudflare.com/s/{token}/../../etc#key={access_key}"),
+            format!("https://test.trycloudflare.com/s/{token}"), // Old, browser-accessible link.
+            format!("https://test.trycloudflare.com/s/{token}#key=123"),
+            format!("https://test.trycloudflare.com/s/{token}#evil={access_key}"),
+            format!("https://test.trycloudflare.com/s/{token}#key={access_key}&extra=1"),
             "https://test.trycloudflare.com/s/123".into(),
         ] { assert!(parse_public_url(&url).is_err(),"{url}"); }
     }
@@ -633,6 +641,64 @@ mod tests {
         m.files[0].name="outfit.zip".into();
         m.files[0].size=MAX_FILE_BYTES+1;
         assert!(validate_manifest(&m).is_err());
+    }
+    #[test]
+    fn browser_navigation_is_denied_but_receiving_app_header_works() -> Result<()> {
+        // Run the real local HTTP server to check *all* sensitive endpoints;
+        // a URL fragment is not sent by normal browser navigations.
+        let tmp = tempfile::tempdir()?;
+        let payload = b"private test fixture";
+        let source = tmp.path().join("fixture.zip");
+        fs::write(&source, payload)?;
+        let digest = format!("{:x}",Sha256::digest(payload));
+        let manifest = Manifest {
+            version: 1, title: "Shared fixture".into(), creator: "Test shop".into(),
+            category: "Ropa".into(), tags: String::new(), description: String::new(),
+            avatars: Vec::new(), booth_url: String::new(), nsfw: false,
+            cover: Some(TransferCover { size: payload.len() as u64, sha256: digest.clone() }),
+            files: vec![TransferFile {
+                index: 0, name: "fixture.zip".into(),
+                size: payload.len() as u64, sha256: digest,
+            }],
+        };
+        let offer = Offer { manifest, paths: vec![source.clone()], cover: Some(source) };
+        let server = Server::http("127.0.0.1:0")
+            .map_err(|e|anyhow!("Test HTTP server could not bind: {e}"))?;
+        let port = server.server_addr().to_ip().context("Missing loopback address")?.port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_worker = Arc::clone(&stop);
+        let token = "a".repeat(64);
+        let access_key = "b".repeat(64);
+        let server_token = token.clone();
+        let server_key = access_key.clone();
+        let worker = thread::spawn(move || serve_offer(
+            server, offer, server_token, server_key, String::new(),
+            Instant::now() + Duration::from_secs(10), 3, stop_worker
+        ));
+        let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
+        let base = format!("http://127.0.0.1:{port}/s/{token}");
+        // Typical browser address-bar navigation: no special header.
+        for path in ["", "/", "/manifest", "/cover", "/file/0"] {
+            let response = client.get(format!("{base}{path}")).send()?;
+            assert_eq!(response.status(),reqwest::StatusCode::NOT_FOUND,"{path}");
+        }
+        // No static identification string or made-up access key is sufficient.
+        let wrong = client.get(format!("{base}/manifest"))
+            .header(TRANSFER_KEY_HEADER,"SZKura/1").send()?;
+        assert_eq!(wrong.status(),reqwest::StatusCode::NOT_FOUND);
+        // The app extracts the second 256-bit secret from #key=... and
+        // includes it as a header for the manifest, cover and archive.
+        for path in ["/manifest", "/cover", "/file/0"] {
+            let response = client.get(format!("{base}{path}"))
+                .header(TRANSFER_KEY_HEADER,access_key.as_str()).send()?;
+            assert!(response.status().is_success(),"{path}: {}",response.status());
+        }
+        // Even the full private header does not enable a browser landing page.
+        let root = client.get(&base).header(TRANSFER_KEY_HEADER,access_key.as_str()).send()?;
+        assert_eq!(root.status(),reqwest::StatusCode::NOT_FOUND);
+        stop.store(true,Ordering::Relaxed);
+        worker.join().expect("Local HTTP server thread should exit");
+        Ok(())
     }
     #[test]
     fn finds_cloudflare_address_from_process_log() {
