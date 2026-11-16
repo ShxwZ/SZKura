@@ -8,10 +8,10 @@ Función opcional y desactivada por defecto. SZKura **no descarga ni ejecuta Clo
 2. Desde una ficha con archivos adjuntos pulsa **Compartir ficha**.
 3. Elige caducidad (15-360 minutos), descargas máximas **por archivo** y contraseña opcional.
 4. La primera vez, SZKura muestra un diálogo de consentimiento con origen y finalidad de Cloudflare Tunnel; **Cancelar** no descarga nada. Si aceptas, descarga la versión fijada desde GitHub oficial y verifica su SHA-256 antes de ejecutarla.
-5. Cuando se haya creado, el diálogo se cerrará y aparecerá **Copiar enlace** en la cabecera de la ficha, junto a **Detener compartición**. El receptor **solo podrá importar la ficha y los archivos desde otra instalación compatible de SZKura**. Abrir el enlace en un navegador no muestra una página ni permite descargas.
-6. Pulsa **Detener compartición** en la cabecera de esa ficha para revocar el enlace.
+5. Cuando se haya creado, el diálogo se cerrará y aparecerá **Copiar enlace** en la cabecera de la ficha, junto a **Dejar de compartir**. El receptor **solo podrá importar la ficha y los archivos desde otra instalación compatible de SZKura**. Abrir el enlace en un navegador no muestra una página ni permite descargas.
+6. Pulsa **Dejar de compartir** en la cabecera de esa ficha o en el aviso superior para revocar el enlace inmediatamente.
 
-SZKura permite **una sola ficha compartida a la vez**. Mientras el túnel esté activo, la cabecera muestra **Compartiendo ahora: [nombre de la ficha]** y el acceso **Ver ficha compartida**. Si intentas compartir otra ficha, un modal con el nombre de la que ya está activa explica la limitación y ofrece **Ir a ficha compartida**. Desde esa ficha puedes revisar/copiar el enlace o detenerlo, y después compartir otro producto. Cambiar de ficha puede descartar ediciones aún no guardadas; el modal lo advierte.
+SZKura permite **una sola ficha compartida a la vez**. Mientras el túnel esté activo, la cabecera muestra **Compartiendo ahora: [nombre de la ficha]**, junto a **Ver ficha** y **Dejar de compartir**. El botón **Compartir ficha** queda deshabilitado en las demás fichas hasta que detengas el enlace actual; no se muestra ningún aviso emergente. **Dejar de compartir** revoca inmediatamente el enlace. **Ver ficha** abre la ficha activa para revisar o copiar el enlace (guarda antes las ediciones pendientes en otra ficha).
 
 La primera versión comparte la **ficha y todos sus adjuntos**; no ofrece selección individual de archivos. No comparte otras fichas, rutas originales, credenciales, preferencias ni la base de datos completa.
 
@@ -51,4 +51,4 @@ El workflow CI de esta rama comprueba Rust en Linux y Windows. También hay prue
 
 ## Interfaz y traducciones
 
-La compartición usa los modales de confirmación estándar para el consentimiento de Cloudflare y la importación. La copia del enlace aparece en la cabecera de la propia ficha; la entrada de importación solo aparece si la opción está habilitada. Los flujos, estados y errores disponen de traducción española e inglesa (ver `src/i18n.rs` y `AGENTS.md`).
+El flujo para compartir archivos usa los modales de confirmación estándar para el consentimiento de Cloudflare y la importación. La copia del enlace aparece en la cabecera de la propia ficha; la entrada de importación solo aparece si la opción está habilitada. Los flujos, estados y errores disponen de traducción española e inglesa (ver `src/i18n.rs` y `AGENTS.md`).
