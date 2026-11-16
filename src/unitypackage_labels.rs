@@ -1,7 +1,8 @@
 //! Experimental, opt-in exporter that adds native Unity Asset Labels to a
 //! *copy* of a .unitypackage. It never writes to the source or to a Unity project.
-//! Each GUID's pathname/asset/payload is kept; only eligible asset.meta entries
-//! gain a top-level YAML label (preserving any labels they already contain).
+//! Each GUID's pathname/asset/payload is kept. Only the first included
+//! parent folder (or closest included subfolder) receives a native Asset Label;
+//! other asset.meta entries remain byte-for-byte unchanged.
 use anyhow::{bail, Context, Result};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use std::{collections::BTreeSet, fs::File, io::{BufReader, Read}, path::Path};
@@ -46,10 +47,13 @@ pub fn export_labeled_unitypackage(
         bail!("UnityPackage no válido o mayor de 2 GiB");
     }
 
-    // Pass 1: only GUIDs with valid Assets/ pathname may be labeled. This also
-    // validates the input TAR before writing any proposed output.
+    // Pass 1: identify the first real folder *represented by a GUID and
+    // asset.meta in the package*, not every file under Assets/. The TAR stream
+    // is validated before writing the proposed output.
     let eligible = eligible_guids(source)?;
-    if eligible.is_empty() { bail!("El paquete no contiene rutas Assets/ etiquetables"); }
+    if eligible.is_empty() {
+        bail!("No se encontró una carpeta de Unity incluida en el paquete para etiquetar");
+    }
 
     // Same filesystem directory => atomic persist_noclobber, no partial output
     // on errors and no risk of overwriting an existing package.
@@ -139,7 +143,9 @@ pub fn cached_labeled_unitypackage(
         hasher.update(&buffer[..n]);
     }
     let key = hasher.finalize().to_hex();
-    let destination=cache.join(format!("labeled-{key}-{label}.unitypackage"));
+    // Version the cache key: existing v1 copies labeled *every file* and
+    // must never be reused by the new folder-only import behavior.
+    let destination=cache.join(format!("labeled-folder-v2-{key}-{label}.unitypackage"));
     if destination.exists() {
         let entry=std::fs::symlink_metadata(&destination)?;
         if !entry.file_type().is_file() || entry.len()==0
@@ -189,11 +195,19 @@ fn member_guid<'a>(path: &'a str, name: &str) -> Option<&'a str> {
     Some(guid)
 }
 
+/// Find exactly one folder to label, preferring the shallowest folder under
+/// Assets/ and breaking equal-depth ties by the package's pathname order.
+/// Folder metadata is represented by GUID/asset.meta + GUID/pathname and *no*
+/// GUID/asset; require at least one child path so malformed empty file entries
+/// cannot be mistaken for folders. If the top folder is implicit/not exported,
+/// choose the first included subfolder instead. Do not tag files as fallback.
 fn eligible_guids(source: &Path) -> Result<BTreeSet<String>> {
     let gzip = GzDecoder::new(BufReader::new(File::open(source)?))
         .take(MAX_UNCOMPRESSED_BYTES);
     let mut archive = Archive::new(gzip);
-    let mut selected = BTreeSet::new();
+    let mut paths: Vec<(String, String)> = Vec::new();
+    let mut asset_guids = BTreeSet::new();
+    let mut meta_guids = BTreeSet::new();
     let mut count = 0usize;
     let mut total = 0u64;
     for entry in archive.entries().context("UnityPackage TAR no válido")? {
@@ -204,21 +218,48 @@ fn eligible_guids(source: &Path) -> Result<BTreeSet<String>> {
         if total > MAX_UNCOMPRESSED_BYTES { bail!("UnityPackage supera el límite de 4 GiB de datos"); }
         if !entry.header().entry_type().is_file() { continue; }
         let name = entry.path()?.to_string_lossy().into_owned();
+        if let Some(guid) = member_guid(&name, "asset") {
+            asset_guids.insert(guid.to_owned());
+            continue;
+        }
+        if let Some(guid) = member_guid(&name, "asset.meta") {
+            meta_guids.insert(guid.to_owned());
+            continue;
+        }
         let Some(guid) = member_guid(&name, "pathname") else { continue; };
         if entry.size() > MAX_PATHNAME_BYTES { bail!("pathname supera el límite de 16 KiB"); }
         let mut data = Vec::new();
         entry.read_to_end(&mut data)?;
-        let path = std::str::from_utf8(&data).context("pathname no es UTF-8")?;
-        let first_line = path.lines().next().unwrap_or("")
+        let pathname = std::str::from_utf8(&data).context("pathname no es UTF-8")?;
+        let path = pathname.lines().next().unwrap_or("")
             .trim_end_matches('\0').replace('\\', "/");
-        let parts = first_line.split('/').collect::<Vec<_>>();
+        let parts = path.split('/').collect::<Vec<_>>();
         if parts.len() < 2 || parts[0] != "Assets" || parts.iter().any(|p|
             p.is_empty() || *p=="." || *p==".." || p.contains(':') ||
             p.chars().any(char::is_control)) { continue; }
-        selected.insert(guid.to_owned());
-        if selected.len() > MAX_TARGETS { bail!("Demasiados assets para etiquetar"); }
+        paths.push((guid.to_owned(),path));
+        if paths.len() > MAX_TARGETS { bail!("Demasiados assets en el paquete"); }
     }
-    Ok(selected)
+
+    // Binary search for a descendant instead of O(n^2) candidate scans.
+    // All references are borrowed from the bounded path list.
+    let mut all_paths = paths.iter().map(|(_,p)|p.as_str()).collect::<Vec<_>>();
+    all_paths.sort_unstable();
+    let selected = paths.iter()
+        .filter(|(guid,path)| {
+            if asset_guids.contains(guid) || !meta_guids.contains(guid) {
+                return false;
+            }
+            let prefix = format!("{path}/");
+            let index = all_paths.partition_point(|other| *other < prefix.as_str());
+            all_paths.get(index).is_some_and(|candidate|candidate.starts_with(&prefix))
+        })
+        .min_by_key(|(_,path)|path.bytes().filter(|b|*b==b'/').count());
+
+    // Only one GUID gets modified, even if the archive includes dependencies
+    // in multiple top-level Assets folders.
+    Ok(selected.map(|(guid,_)|BTreeSet::from([guid.to_owned()]))
+        .unwrap_or_default())
 }
 
 /// Add a root-level YAML labels entry without touching GUID, importer data or
