@@ -210,6 +210,8 @@ pub fn translate(language:Language,s:&str)->&str {
         "Experimental: genera una copia; no modifica originales ni carpetas de Unity."=>"Experimental: creates a copy; originals and Unity folders stay unchanged.",
         "Conserva GUIDs, rutas y demás etiquetas; importar manualmente en Unity."=>"Keeps GUIDs, paths, and existing labels; import manually into Unity.",
         "Copia etiquetada creada"=>"Labeled copy created",
+        "Al abrir, se añade automáticamente la etiqueta SZKura en una copia de caché."=>"Opening automatically adds the SZKura label to a cached copy.",
+        "Al abrir en Unity desde SZKura, esta etiqueta se aplica automáticamente a una copia de caché."=>"Opening in Unity from SZKura automatically applies this label to a cached copy.",
         "Categoría no válida para etiquetar"=>"Invalid category for labeling",
         "Carpetas de importación en Unity"=>"Unity import folders",
         "Carpetas principales"=>"Main folders",
@@ -435,6 +437,8 @@ const MESSAGE_PREFIXES:&[(&str,&str)]=&[
     ("Error al compartir: ","Sharing error: "),
     ("Error al abrir enlace: ","Could not open link: "),
     ("Error al importar: ","Could not import: "),
+    ("Copia etiquetada enviada a Unity: ","Labeled copy sent to Unity: "),
+    ("No se abrió Unity; importa manualmente la copia etiquetada: ","Unity did not open; manually import the labeled copy: "),
     ("No se pudo guardar la preferencia: ","Could not save preference: "),
     ("No se pudo eliminar el componente: ","Could not remove component: "),
     ("Error en transferencia: ","Transfer error: "),
@@ -539,6 +543,8 @@ mod tests{
             ("Exportar copia etiquetada...", "Export labeled copy..."),
             ("Etiqueta de la categoría guardada", "Saved category label"),
             ("Copia etiquetada creada", "Labeled copy created"),
+            ("Al abrir, se añade automáticamente la etiqueta SZKura en una copia de caché.", "Opening automatically adds the SZKura label to a cached copy."),
+            ("Al abrir en Unity desde SZKura, esta etiqueta se aplica automáticamente a una copia de caché.", "Opening in Unity from SZKura automatically applies this label to a cached copy."),
             ("Carpetas de importación en Unity", "Unity import folders"),
             ("Carpetas principales", "Main folders"),
             ("Carpetas exactas", "Exact folders"),
@@ -549,6 +555,16 @@ mod tests{
             assert_eq!(translate(Language::Spanish, es), es);
             assert_eq!(translate(Language::English, es), en);
         }
+    }
+    #[test]
+    fn automatic_labeled_open_status_is_translated() {
+        let status="Copia etiquetada enviada a Unity: SZKura_Ropa";
+        assert_eq!(translate_message(Language::Spanish,status),status);
+        assert_eq!(translate_message(Language::English,status),
+            "Labeled copy sent to Unity: SZKura_Ropa");
+        let fallback="No se abrió Unity; importa manualmente la copia etiquetada: /tmp/example.unitypackage";
+        assert_eq!(translate_message(Language::English,fallback),
+            "Unity did not open; manually import the labeled copy: /tmp/example.unitypackage");
     }
     #[test]
     fn unity_package_reader_errors_are_localized_in_both_languages() {
