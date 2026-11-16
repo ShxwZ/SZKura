@@ -498,12 +498,23 @@ pub fn start_share(data_dir: &Path, db_path: &Path, asset_id: i64,
     // Isolate SZKura Quick Tunnels from the user's global ~/.cloudflared/config.yml.
     let tunnel_config = data_dir.join("components").join("quick-tunnel.yml");
     fs::write(&tunnel_config, b"")?;
-    let mut child = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .arg("--config").arg(&tunnel_config)
         .arg("tunnel").arg("--no-autoupdate").arg("--url")
         .arg(format!("http://127.0.0.1:{}",addr.port()))
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
-        .spawn().context("No se pudo iniciar Cloudflare Tunnel")?;
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    // cloudflared is a console executable on Windows. Running it from an
+    // eframe GUI would otherwise open a persistent, unwanted CMD window.
+    // CREATE_NO_WINDOW suppresses only the console; stderr remains piped for
+    // tunnel URL discovery and the child is still killed when sharing stops.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command.spawn().context("No se pudo iniciar Cloudflare Tunnel")?;
     let stderr = child.stderr.take().context("Sin salida del proceso de túnel")?;
     let (tx,rx)=mpsc::channel();
     thread::spawn(move||{
