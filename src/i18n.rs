@@ -276,6 +276,7 @@ pub fn translate(language:Language,s:&str)->&str {
         "Enlace revocado."=>"Link revoked.",
         "Enlace creado. Puedes copiarlo desde la cabecera de la ficha."=>"Link created. You can copy it from the product header.",
         "Compartición cancelada."=>"Sharing canceled.",
+        "Compartición desactivada."=>"Sharing disabled.",
         "Ficha comprobada. Revisa antes de importar."=>"Product checked. Review before importing.",
         "Ficha y archivos importados correctamente."=>"Product and files imported successfully.",
         "El enlace ha caducado y el túnel se ha detenido."=>"The link expired and the tunnel was stopped.",
