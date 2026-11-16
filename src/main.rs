@@ -29,6 +29,7 @@ use szkura::{
     migration,
     updater::{self,AvailableUpdate},
     package_inspect::{self, ZipPreview, UnityPackage},
+    unitypackage_inspect::{self, UnityPathsPreview},
 };
 
 // All surface, foreground and accent colors come from the selected palette.
@@ -115,6 +116,11 @@ struct BoothApp {
     inspected_zip:Option<String>,
     archive_preview:Option<ZipPreview>,
     archive_scan:Option<Receiver<Result<(ZipPreview,package_inspect::CacheUse),String>>>,
+    unity_paths_key:Option<String>,
+    unity_paths_label:String,
+    unity_paths_scan:Option<Receiver<Result<UnityPathsPreview,String>>>,
+    unity_paths_preview:Option<UnityPathsPreview>,
+    unity_paths_error:Option<String>,
     confirm_clear_cache:bool,
     textures:HashMap<String,CoverTextures>, texture_keys:VecDeque<String>,
     texture_bytes:usize, cjk_loaded:bool,
@@ -195,6 +201,8 @@ impl BoothApp {
             status:"Biblioteca lista. Cada producto puede tener varios archivos vinculados.".into(),
             receiver:None,inspected_zip:None,archive_preview:None,
             archive_scan:None,confirm_clear_cache:false,
+            unity_paths_key:None,unity_paths_label:String::new(),
+            unity_paths_scan:None,unity_paths_preview:None,unity_paths_error:None,
             textures:HashMap::new(),texture_keys:VecDeque::new(),
             texture_bytes:0,cjk_loaded,
             cover_job_tx,cover_result_rx,pending_covers:HashSet::new(),
@@ -241,6 +249,7 @@ impl BoothApp {
                 self.edit_nsfw=a.nsfw;
                 self.edit_booth=a.booth_url;
                 self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
+                self.clear_unity_paths();
                 self.edit_description_expanded=false;
             }
             Ok(None)=>self.status="El producto ya no existe".into(),
@@ -342,6 +351,7 @@ impl BoothApp {
                             self.db=catalog;
                             self.selected=None;self.new_dialog=false;
                             self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
+                self.clear_unity_paths();
                             let root=self.db.storage_root().ok().flatten()
                                 .filter(|root|root.is_dir());
                             self.configured=root.is_some();
@@ -509,6 +519,7 @@ impl BoothApp {
     fn inspect_archive(&mut self,source:String,force:bool){
         if !force && self.inspected_zip.as_deref()==Some(&source) {
             self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
+                self.clear_unity_paths();
             return;
         }
         if self.archive_scan.is_some(){return;}
@@ -528,6 +539,49 @@ impl BoothApp {
             ).map_err(|e|format!("{e:#}"));
             let _=sender.send(result);
         });
+    }
+    fn clear_unity_paths(&mut self) {
+        self.unity_paths_key=None;
+        self.unity_paths_label.clear();
+        self.unity_paths_scan=None;
+        self.unity_paths_preview=None;
+        self.unity_paths_error=None;
+    }
+    /// Inspect UnityPackage pathname metadata off the UI thread. Nested
+    /// packages use the existing validated, bounded, on-demand cache extractor.
+    fn inspect_unity_paths(&mut self, source:PathBuf, package:Option<UnityPackage>) {
+        if self.unity_paths_scan.is_some() {return;}
+        self.unity_paths_label=package.as_ref().map(|pkg|pkg.display_path())
+            .unwrap_or_else(||source.file_name()
+                .map(|name|name.to_string_lossy().into_owned())
+                .unwrap_or_default());
+        self.unity_paths_key=Some(unity_paths_id(&source,package.as_ref()));
+        self.unity_paths_preview=None;
+        self.unity_paths_error=None;
+        let (sender,receiver)=mpsc::channel();
+        self.unity_paths_scan=Some(receiver);
+        let cache=self.paths.unity_cache.clone();
+        std::thread::spawn(move||{
+            let result=(|| -> Result<UnityPathsPreview> {
+                let path=if let Some(package)=package {
+                    package_inspect::extract_unitypackage_nested(&source,&package,&cache)?
+                } else {source};
+                unitypackage_inspect::inspect_unitypackage_paths(&path)
+            })().map_err(|error|format!("{error:#}"));
+            let _=sender.send(result);
+        });
+    }
+    fn poll_unity_paths(&mut self,ctx:&egui::Context) {
+        if let Some(answer)=self.unity_paths_scan.as_ref().and_then(|rx|rx.try_recv().ok()){
+            self.unity_paths_scan=None;
+            match answer {
+                Ok(preview)=>{self.unity_paths_preview=Some(preview);self.unity_paths_error=None;},
+                Err(error)=>{self.unity_paths_preview=None;self.unity_paths_error=Some(error);},
+            }
+        }
+        if self.unity_paths_scan.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(150));
+        }
     }
     fn poll_archive_scan(&mut self){
         if let Some(answer)=self.archive_scan.as_ref().and_then(|rx|rx.try_recv().ok()){
@@ -572,6 +626,7 @@ impl BoothApp {
         if !self.configured {self.show_settings=true;return;}
         self.selected=None;
         self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
+                self.clear_unity_paths();
         self.new_url.clear();self.new_title.clear();self.new_creator.clear();
         self.new_category="Otros".into();self.new_tags.clear();self.new_avatars.clear();
         self.new_nsfw=false;
@@ -2072,6 +2127,7 @@ impl eframe::App for BoothApp {
             }
         }
         self.poll_archive_scan();
+        self.poll_unity_paths(ctx);
         self.poll_cover_results(ctx);
         if self.favorites_dirty {
             self.favorites_dirty=false;
