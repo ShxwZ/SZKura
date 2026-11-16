@@ -64,7 +64,6 @@ pub struct SharingUi {
     pending_asset: Option<i64>,
     active_asset: Option<i64>,
     active_title: Option<String>,
-    active_notice: bool,
     navigate_to_shared: Option<i64>,
     active: Option<ShareSession>,
     share_rx: Option<Receiver<Result<ShareSession, String>>>,
@@ -90,7 +89,6 @@ impl SharingUi {
             pending_asset: None,
             active_asset: None,
             active_title: None,
-            active_notice: false,
             navigate_to_shared: None,
             active: None,
             share_rx: None,
@@ -108,24 +106,22 @@ impl SharingUi {
             import_rx: None,
         }
     }
+    fn can_start_share(&self) -> bool {
+        self.enabled && self.active.is_none() && self.active_asset.is_none()
+            && self.share_rx.is_none()
+    }
     pub fn open_share(&mut self, id: i64, title: &str) {
-        if !self.enabled { return; }
-        if self.active_asset.is_some() {
-            // One session at a time. Explain which product is active instead
-            // of silently ignoring a request to share another product.
-            self.active_notice = true;
-        } else if self.share_rx.is_none() {
-            self.share_target = Some(id);
-            self.share_target_title = Some(title.to_owned());
-            self.status.clear();
-        }
+        if !self.can_start_share() { return; }
+        self.share_target = Some(id);
+        self.share_target_title = Some(title.to_owned());
+        self.status.clear();
     }
     pub fn take_navigation(&mut self) -> Option<i64> {
         self.navigate_to_shared.take()
     }
     fn navigate_to_active(&mut self) {
+        if self.active_asset.is_none() { return; }
         self.navigate_to_shared = self.active_asset;
-        self.active_notice = false;
         // Product navigation should not leave an old preview dialog floating
         // over the destination's copy/revoke controls.
         self.import_open = false;
@@ -150,8 +146,11 @@ impl SharingUi {
                 .strong().size(12.5).color(theme::colors().accent));
             ui.label(RichText::new(display).size(12.5).color(theme::colors().text))
                 .on_hover_text(&title);
-            if action(ui, Icon::Link, "Ver ficha compartida", false) {
-                self.active_notice = true;
+            if action(ui, Icon::Link, "Ver ficha", false) {
+                self.navigate_to_active();
+            }
+            if action(ui, Icon::Trash, "Dejar de compartir", false) {
+                self.stop_share();
             }
         });
     }
@@ -171,7 +170,6 @@ impl SharingUi {
         self.active = None; // Drop kills cloudflared and revokes the link.
         self.active_asset = None;
         self.active_title = None;
-        self.active_notice = false;
         self.navigate_to_shared = None;
         self.share_target = None;
         self.share_target_title = None;
@@ -187,7 +185,7 @@ impl SharingUi {
         let active_url = self.active_url_for(id).map(str::to_owned);
         ui.horizontal_wrapped(|ui| {
             if let Some(url) = active_url {
-                ui.label(RichText::new(tr("Enlace de compartición activo"))
+                ui.label(RichText::new(tr("Enlace activo"))
                     .size(12.5).color(theme::colors().accent))
                     .on_hover_text(&url);
                 ui.label(RichText::new(tr("Solo para importar en SZKura; no hay descarga desde el navegador."))
@@ -196,25 +194,17 @@ impl SharingUi {
                     ui.ctx().copy_text(url);
                     self.status = "Enlace copiado al portapapeles.".into();
                 }
-                if action(ui, Icon::Trash, "Detener compartición", false) {
+                if action(ui, Icon::Trash, "Dejar de compartir", false) {
                     self.stop_share();
                 } else if self.status == "Enlace copiado al portapapeles." {
                     ui.label(RichText::new(tr("Enlace copiado al portapapeles."))
                         .size(12.0).color(theme::colors().muted));
                 }
-            } else if self.active.is_some() {
-                ui.label(RichText::new(tr("Ya estás compartiendo otra ficha."))
-                    .size(12.5).color(theme::colors().muted));
-                if has_files && ui.add_enabled_ui(!busy, |ui| {
-                    action(ui, Icon::Link, "Compartir ficha", false)
-                }).inner {
-                    self.open_share(id,title);
-                }
-                if action(ui, Icon::Link, "Ver ficha compartida", false) {
-                    self.active_notice = true;
-                }
             } else if has_files {
-                if ui.add_enabled_ui(!busy && self.share_rx.is_none(), |ui| {
+                // A second tunnel cannot be started. Keep the same button in
+                // place, but disabled; the header identifies the active product
+                // and offers a direct stop action.
+                if ui.add_enabled_ui(!busy && self.can_start_share(), |ui| {
                     action(ui, Icon::Link, "Compartir ficha", false)
                 }).inner {
                     self.open_share(id,title);
@@ -245,10 +235,9 @@ impl SharingUi {
                 } else {
                     self.share_target = None;
                     self.share_target_title = None;
-                    self.active_notice = false;
                     self.navigate_to_shared = None;
                     self.consent = false;
-                    self.status = "Compartición desactivada.".into();
+                    self.status = "Compartir archivos desactivado.".into();
                 }
                 self.import_open = false;
                 self.confirm_import = false;
@@ -350,7 +339,7 @@ impl SharingUi {
                     } else {
                         drop(session);
                         self.share_target_title = None;
-                        self.status = "Compartición cancelada.".into();
+                        self.status = "Enlace cancelado.".into();
                     }
                 }
                 Err(err) => {
@@ -410,34 +399,6 @@ impl SharingUi {
         covers: &Path,
     ) {
         if !self.enabled { return; }
-        if self.active_notice {
-            if let (Some(id), Some(title)) = (self.active_asset, self.active_title.clone()) {
-                let choice = confirmation_dialog(
-                    ctx, "szkura-already-sharing-notice", "Ya hay una ficha compartida",
-                    "Ir a ficha compartida", ConfirmTone::Primary,
-                    self.import_rx.is_none() && self.preview_rx.is_none(), |ui| {
-                        dialog_text(ui, "SZKura solo permite compartir una ficha a la vez.");
-                        ui.add_space(9.0);
-                        dialog_subject(ui, &title);
-                        ui.add_space(7.0);
-                        dialog_text(ui, "Abre esa ficha para revisar, copiar o detener el enlace activo.");
-                        ui.add_space(7.0);
-                        dialog_text(ui, "Los cambios sin guardar en la ficha actual podrían perderse al cambiar.");
-                    });
-                match choice {
-                    ConfirmChoice::Accept => {
-                        self.navigate_to_active();
-                        debug_assert_eq!(self.navigate_to_shared, Some(id));
-                    }
-                    ConfirmChoice::Cancel => self.active_notice = false,
-                    ConfirmChoice::Pending => {}
-                }
-            } else {
-                self.active_notice = false;
-            }
-            // Never stack this navigation prompt with an import/share modal.
-            return;
-        }
         // The product link is copied from the detail header. The modal only
         // configures a temporary share and then closes after successful startup.
         if self.share_target.is_some() && !self.consent {
@@ -641,24 +602,31 @@ mod tests {
     }
 
     #[test]
-    fn sharing_another_product_shows_active_notice_and_navigates_once() {
+    fn second_share_is_disabled_and_header_actions_use_active_product() {
         let mut ui = SharingUi::new(true);
-        // Model an existing active session without starting cloudflared.
+        assert!(ui.can_start_share());
+        ui.open_share(17,"First product");
+        assert_eq!(ui.share_target,Some(17));
+        ui.share_target = None;
+        ui.share_target_title = None;
+        // Model the existing product's active session without starting a tunnel.
         ui.active_asset = Some(17);
-        ui.active_title = Some("Shared product".into());
+        ui.active_title = Some("First product".into());
+        assert!(!ui.can_start_share());
         ui.open_share(35,"Other product");
-        assert!(ui.active_notice);
         assert!(ui.share_target.is_none());
+        assert_eq!(ui.active_title.as_deref(),Some("First product"));
         ui.import_open = true;
-        assert_eq!(ui.active_title.as_deref(),Some("Shared product"));
         ui.navigate_to_active();
-        assert!(!ui.active_notice);
         assert!(!ui.import_open);
         assert_eq!(ui.take_navigation(),Some(17));
         assert_eq!(ui.take_navigation(),None);
         ui.stop_share();
         assert!(ui.active_title.is_none());
         assert!(ui.take_navigation().is_none());
+        assert!(ui.can_start_share());
+        ui.open_share(35,"Other product");
+        assert_eq!(ui.share_target,Some(35));
     }
 
     #[test]
