@@ -23,6 +23,10 @@ const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_FILES: usize = 32;
+// A normal browser navigation cannot attach this header. The 256-bit key
+// travels in the share URL fragment, which is never sent in HTTP requests.
+// This is bearer authentication, NOT attestation of a genuine SZKura binary.
+const TRANSFER_KEY_HEADER: &str = "X-SZKura-Transfer-Key";
 
 // Pinned SHA-256 values published in the official Cloudflare release notes.
 // Updates require a deliberate source-code change and a new user consent.
@@ -219,41 +223,48 @@ fn offer(db_path: &Path, asset_id: i64) -> Result<Offer> {
 fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("Header constante válida")
 }
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;")
-     .replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
-}
 fn valid_token(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
-fn parse_public_url(raw: &str) -> Result<Url> {
-    let u = Url::parse(raw.trim()).context("Enlace no válido")?;
+fn parse_public_url(raw: &str) -> Result<(Url, String)> {
+    let mut u = Url::parse(raw.trim()).context("Enlace no válido")?;
     let host = u.host_str().unwrap_or("");
     if u.scheme() != "https" || !host.ends_with(".trycloudflare.com") ||
        u.port().is_some_and(|p| p != 443) || !u.username().is_empty() ||
-       u.password().is_some() || u.query().is_some() || u.fragment().is_some() {
+       u.password().is_some() || u.query().is_some() {
         bail!("Solo se admiten enlaces HTTPS de SZKura en trycloudflare.com");
     }
     let parts = u.path().split('/').collect::<Vec<_>>();
     if parts.len() != 3 || parts[1] != "s" || !valid_token(parts[2]) {
         bail!("El enlace no tiene el formato de transferencia SZKura");
     }
-    Ok(u)
+    // Browsers never send URL fragments to the server. Only a client which
+    // understands this link can extract the key and send it via the header.
+    let access_key = u.fragment()
+        .and_then(|fragment| fragment.strip_prefix("key="))
+        .filter(|key| valid_token(key))
+        .context("El enlace requiere una clave de transferencia SZKura válida")?
+        .to_owned();
+    u.set_fragment(None);
+    Ok((u, access_key))
 }
 fn client() -> Result<Client> {
     Ok(Client::builder().redirect(Policy::none())
         .timeout(Duration::from_secs(60 * 30))
         .user_agent("SZKura/0.2 asset transfer").build()?)
 }
-fn get(client: &Client, url: Url, password: &str) -> Result<reqwest::blocking::Response> {
-    let mut req = client.get(url).header("Accept", "application/octet-stream");
+fn get(client: &Client, url: Url, access_key: &str, password: &str)
+    -> Result<reqwest::blocking::Response> {
+    let mut req = client.get(url)
+        .header("Accept", "application/octet-stream")
+        .header(TRANSFER_KEY_HEADER, access_key);
     if !password.is_empty() { req = req.basic_auth("szkura", Some(password)); }
     Ok(req.send()?.error_for_status()?)
 }
 pub fn fetch_manifest(link: &str, password: &str) -> Result<Manifest> {
-    let mut url = parse_public_url(link)?;
+    let (mut url, access_key) = parse_public_url(link)?;
     url.set_path(&format!("{}/manifest", url.path()));
-    let mut result = get(&client()?, url, password)?;
+    let mut result = get(&client()?, url, &access_key, password)?;
     if result.content_length().is_some_and(|n| n > MAX_MANIFEST_BYTES) {
         bail!("Manifiesto remoto demasiado grande");
     }
@@ -265,9 +276,9 @@ pub fn fetch_manifest(link: &str, password: &str) -> Result<Manifest> {
     Ok(m)
 }
 
-fn download_verified(client: &Client, url: Url, password: &str, target: &Path,
-    expected_size: u64, expected_hash: &str) -> Result<()> {
-    let mut response = get(client, url, password)?;
+fn download_verified(client: &Client, url: Url, access_key: &str,
+    password: &str, target: &Path, expected_size: u64, expected_hash: &str) -> Result<()> {
+    let mut response = get(client, url, access_key, password)?;
     if response.content_length().is_some_and(|n| n != expected_size) {
         bail!("Tamaño remoto distinto del manifiesto");
     }
@@ -294,7 +305,7 @@ fn download_verified(client: &Client, url: Url, password: &str, target: &Path,
 /// attaches managed copies. Existing BOOTH records are never overwritten.
 pub fn import_shared(link: &str, password: &str, db_path: &Path,
     library: &Path, covers_dir: &Path) -> Result<i64> {
-    let base = parse_public_url(link)?;
+    let (base, access_key) = parse_public_url(link)?;
     let manifest = fetch_manifest(link, password)?;
     let client = client()?;
     let temp = tempfile::tempdir_in(library).context("No se pudo preparar descarga temporal")?;
@@ -305,7 +316,7 @@ pub fn import_shared(link: &str, password: &str, db_path: &Path,
         let target = folder.join(&file.name);
         let mut url = base.clone();
         url.set_path(&format!("{}/file/{}", base.path(),file.index));
-        download_verified(&client,url,password,&target,file.size,&file.sha256)?;
+        download_verified(&client,url,&access_key,password,&target,file.size,&file.sha256)?;
         // Reject damaged archives before adding any product to the local catalog.
         let extension = target.extension().and_then(|s|s.to_str()).unwrap_or("").to_ascii_lowercase();
         match extension.as_str() {
@@ -326,7 +337,7 @@ pub fn import_shared(link: &str, password: &str, db_path: &Path,
         let mut url = base.clone();
         url.set_path(&format!("{}/cover",base.path()));
         let target = temp.path().join("cover.bin");
-        download_verified(&client,url,password,&target,info.size,&info.sha256)?;
+        download_verified(&client,url,&access_key,password,&target,info.size,&info.sha256)?;
         let bytes = fs::read(&target)?;
         let decoded = image::load_from_memory(&bytes)?;
         if decoded.width() == 0 || decoded.height() == 0 ||
@@ -404,7 +415,22 @@ fn find_cloudflare_url(line: &str) -> Option<String> {
     }
     None
 }
-fn serve_offer(server: Server, offer: Offer, token: String,
+fn has_transfer_key(headers: &[Header], access_key: &str) -> bool {
+    headers.iter().any(|h| {
+        if !h.field.equiv(TRANSFER_KEY_HEADER) { return false; }
+        let got = h.value.as_str().as_bytes();
+        let expected = access_key.as_bytes();
+        if got.len() != expected.len() { return false; }
+        // Avoid short-circuiting on which byte of the bearer secret differs.
+        let mut difference = 0_u8;
+        for (&left, &right) in got.iter().zip(expected.iter()) {
+            difference |= left ^ right;
+        }
+        difference == 0
+    })
+}
+
+fn serve_offer(server: Server, offer: Offer, token: String, access_key: String,
     password: String, until: Instant, max_downloads: u32, stop: Arc<AtomicBool>) {
     let counts = (0..offer.paths.len()).map(|_| AtomicU32::new(0)).collect::<Vec<_>>();
     let prefix = format!("/s/{token}");
@@ -415,7 +441,12 @@ fn serve_offer(server: Server, offer: Offer, token: String,
             Err(_) => break,
         };
         let path = request.url().split('?').next().unwrap_or("");
-        if request.method() != &tiny_http::Method::Get || !path.starts_with(&prefix) {
+        // No browser page and no unauthenticated manifest, cover or downloads.
+        // A path token alone is insufficient: SZKura must supply the secret
+        // from the URL fragment in its HTTPS request header.
+        if request.method() != &tiny_http::Method::Get ||
+            !path.starts_with(&prefix) ||
+            !has_transfer_key(request.headers(), &access_key) {
             let _ = request.respond(Response::empty(StatusCode(404)));
             continue;
         }
@@ -424,8 +455,9 @@ fn serve_offer(server: Server, offer: Offer, token: String,
             let authorized = request.headers().iter().any(|h|
                 h.field.equiv("Authorization") && h.value.as_str() == expected);
             if !authorized {
-                let _ = request.respond(Response::empty(StatusCode(401)).with_header(
-                    header("WWW-Authenticate", "Basic realm=\"SZKura Transfer\"")));
+                // No browser Basic-Auth popup (the SZKura client already
+                // supplies credentials when an extra password was selected).
+                let _ = request.respond(Response::empty(StatusCode(401)));
                 continue;
             }
         }
@@ -436,14 +468,8 @@ fn serve_offer(server: Server, offer: Offer, token: String,
                 .with_header(header("Content-Type","application/json; charset=utf-8"))
                 .with_header(header("Cache-Control","no-store")));
         } else if suffix == "" || suffix == "/" {
-            let items = offer.manifest.files.iter().map(|f|format!(
-                "<li><a href=\"{prefix}/file/{}\">{}</a> ({} bytes)</li>",
-                f.index,html_escape(&f.name),f.size)).collect::<Vec<_>>().join("");
-            let page = format!("<!doctype html><html><head><meta charset=\"utf-8\"><title>SZKura</title></head><body><h1>{}</h1><p>Archivos compartidos temporalmente con SZKura</p><ul>{items}</ul></body></html>",
-                html_escape(&offer.manifest.title));
-            let _ = request.respond(Response::from_string(page)
-                .with_header(header("Content-Type","text/html; charset=utf-8"))
-                .with_header(header("Cache-Control","no-store")));
+            // The bare link is deliberately not a browsable listing.
+            let _ = request.respond(Response::empty(StatusCode(404)));
         } else if suffix == "/cover" {
             if let Some(path) = &offer.cover {
                 match File::open(path) {
@@ -495,6 +521,9 @@ pub fn start_share(data_dir: &Path, db_path: &Path, asset_id: i64,
     let mut token_bytes = [0_u8;32];
     OsRng.fill_bytes(&mut token_bytes);
     let token = token_bytes.iter().map(|b|format!("{b:02x}")).collect::<String>();
+    let mut access_key_bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut access_key_bytes);
+    let access_key = access_key_bytes.iter().map(|b|format!("{b:02x}")).collect::<String>();
     // Isolate SZKura Quick Tunnels from the user's global ~/.cloudflared/config.yml.
     let tunnel_config = data_dir.join("components").join("quick-tunnel.yml");
     fs::write(&tunnel_config, b"")?;
@@ -535,7 +564,8 @@ pub fn start_share(data_dir: &Path, db_path: &Path, asset_id: i64,
     let expires = Instant::now() + Duration::from_secs(minutes * 60);
     let stop_worker = Arc::clone(&stop);
     let route_token = token.clone();
-    thread::spawn(move||serve_offer(server,selected,route_token,password,
+    let route_access_key = access_key.clone();
+    thread::spawn(move||serve_offer(server,selected,route_token,route_access_key,password,
         expires,max_downloads,stop_worker));
     let mut public = None;
     let started=Instant::now();
@@ -551,7 +581,10 @@ pub fn start_share(data_dir: &Path, db_path: &Path, asset_id: i64,
         let _=child.lock().map(|mut c|{let _=c.kill();let _=c.wait();});
         bail!("Cloudflare no ha proporcionado un enlace temporal. Comprueba la conexión");
     };
-    let url = format!("{base}/s/{token}");
+    // The key travels in a URL fragment. A browser navigation discards that
+    // fragment at the HTTP layer and therefore gets HTTP 404 from our server.
+    // The receiving SZKura app explicitly sends it as a private request header.
+    let url = format!("{base}/s/{token}#key={access_key}");
     let kill_stop = Arc::clone(&stop);
     let kill_child = Arc::clone(&child);
     thread::spawn(move || {
