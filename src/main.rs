@@ -29,6 +29,7 @@ use szkura::{
     migration,
     updater::{self,AvailableUpdate},
     package_inspect::{self, ZipPreview, UnityPackage},
+    unitypackage_inspect::{self, UnityPathsPreview},
 };
 
 // All surface, foreground and accent colors come from the selected palette.
@@ -115,6 +116,11 @@ struct BoothApp {
     inspected_zip:Option<String>,
     archive_preview:Option<ZipPreview>,
     archive_scan:Option<Receiver<Result<(ZipPreview,package_inspect::CacheUse),String>>>,
+    unity_paths_key:Option<String>,
+    unity_paths_label:String,
+    unity_paths_scan:Option<Receiver<Result<UnityPathsPreview,String>>>,
+    unity_paths_preview:Option<UnityPathsPreview>,
+    unity_paths_error:Option<String>,
     confirm_clear_cache:bool,
     textures:HashMap<String,CoverTextures>, texture_keys:VecDeque<String>,
     texture_bytes:usize, cjk_loaded:bool,
@@ -195,6 +201,8 @@ impl BoothApp {
             status:"Biblioteca lista. Cada producto puede tener varios archivos vinculados.".into(),
             receiver:None,inspected_zip:None,archive_preview:None,
             archive_scan:None,confirm_clear_cache:false,
+            unity_paths_key:None,unity_paths_label:String::new(),
+            unity_paths_scan:None,unity_paths_preview:None,unity_paths_error:None,
             textures:HashMap::new(),texture_keys:VecDeque::new(),
             texture_bytes:0,cjk_loaded,
             cover_job_tx,cover_result_rx,pending_covers:HashSet::new(),
@@ -241,6 +249,7 @@ impl BoothApp {
                 self.edit_nsfw=a.nsfw;
                 self.edit_booth=a.booth_url;
                 self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
+                self.clear_unity_paths();
                 self.edit_description_expanded=false;
             }
             Ok(None)=>self.status="El producto ya no existe".into(),
@@ -342,6 +351,7 @@ impl BoothApp {
                             self.db=catalog;
                             self.selected=None;self.new_dialog=false;
                             self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
+                self.clear_unity_paths();
                             let root=self.db.storage_root().ok().flatten()
                                 .filter(|root|root.is_dir());
                             self.configured=root.is_some();
@@ -509,6 +519,7 @@ impl BoothApp {
     fn inspect_archive(&mut self,source:String,force:bool){
         if !force && self.inspected_zip.as_deref()==Some(&source) {
             self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
+                self.clear_unity_paths();
             return;
         }
         if self.archive_scan.is_some(){return;}
@@ -528,6 +539,59 @@ impl BoothApp {
             ).map_err(|e|format!("{e:#}"));
             let _=sender.send(result);
         });
+    }
+    fn clear_unity_paths(&mut self) {
+        self.unity_paths_key=None;
+        self.unity_paths_label.clear();
+        self.unity_paths_scan=None;
+        self.unity_paths_preview=None;
+        self.unity_paths_error=None;
+    }
+    /// Inspect UnityPackage pathname metadata off the UI thread. Nested
+    /// packages use the existing validated, bounded, on-demand cache extractor.
+    fn inspect_unity_paths(&mut self, source:PathBuf, package:Option<UnityPackage>) {
+        if self.unity_paths_scan.is_some() {return;}
+        self.unity_paths_label=package.as_ref().map(|pkg|pkg.display_path())
+            .unwrap_or_else(||source.file_name()
+                .map(|name|name.to_string_lossy().into_owned())
+                .unwrap_or_default());
+        self.unity_paths_key=Some(unity_paths_id(&source,package.as_ref()));
+        self.unity_paths_preview=None;
+        self.unity_paths_error=None;
+        let (sender,receiver)=mpsc::channel();
+        self.unity_paths_scan=Some(receiver);
+        let cache=self.paths.unity_cache.clone();
+        std::thread::spawn(move||{
+            let result=(|| -> Result<UnityPathsPreview> {
+                let path=if let Some(package)=package {
+                    package_inspect::extract_unitypackage_nested(&source,&package,&cache)?
+                } else {source};
+                unitypackage_inspect::inspect_unitypackage_paths(&path)
+            })().map_err(|error|format!("{error:#}"));
+            let _=sender.send(result);
+        });
+    }
+    /// The same action opens and collapses the current package preview.
+    /// Closing drops the receiver: an already-running worker cannot reopen it.
+    fn toggle_unity_paths(&mut self,source:PathBuf,package:Option<UnityPackage>) {
+        let key=unity_paths_id(&source,package.as_ref());
+        if self.unity_paths_key.as_deref()==Some(key.as_str()) {
+            self.clear_unity_paths();
+        } else {
+            self.inspect_unity_paths(source,package);
+        }
+    }
+    fn poll_unity_paths(&mut self,ctx:&egui::Context) {
+        if let Some(answer)=self.unity_paths_scan.as_ref().and_then(|rx|rx.try_recv().ok()){
+            self.unity_paths_scan=None;
+            match answer {
+                Ok(preview)=>{self.unity_paths_preview=Some(preview);self.unity_paths_error=None;},
+                Err(error)=>{self.unity_paths_preview=None;self.unity_paths_error=Some(error);},
+            }
+        }
+        if self.unity_paths_scan.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(150));
+        }
     }
     fn poll_archive_scan(&mut self){
         if let Some(answer)=self.archive_scan.as_ref().and_then(|rx|rx.try_recv().ok()){
@@ -572,6 +636,7 @@ impl BoothApp {
         if !self.configured {self.show_settings=true;return;}
         self.selected=None;
         self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
+                self.clear_unity_paths();
         self.new_url.clear();self.new_title.clear();self.new_creator.clear();
         self.new_category="Otros".into();self.new_tags.clear();self.new_avatars.clear();
         self.new_nsfw=false;
@@ -991,6 +1056,7 @@ impl BoothApp {
         let(mut inspect_zip,mut force_reinspect,mut open_direct):
             (Option<String>,Option<String>,Option<PathBuf>)=(None,None,None);
         let mut open_nested:Option<(PathBuf,UnityPackage)>=None;
+        let mut inspect_unity:Option<(PathBuf,Option<UnityPackage>)>=None;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(24,18)))
             .show(ctx,|ui|{
@@ -1085,6 +1151,8 @@ impl BoothApp {
                             let direct_package=source.extension().and_then(|x|x.to_str())
                                 .is_some_and(|x|x.eq_ignore_ascii_case("unitypackage"));
                             let expanded=self.inspected_zip.as_deref()==Some(&file.stored_path);
+                            let unity_direct_open=self.unity_paths_key.as_deref()
+                                ==Some(unity_paths_id(&source,None).as_str());
                             egui::Frame::new().fill(colors().panel)
                                 .stroke(egui::Stroke::new(1.0,colors().stroke))
                                 .corner_radius(10).inner_margin(14).show(ui,|ui|{
@@ -1125,8 +1193,20 @@ impl BoothApp {
                                                 .min_size(egui::vec2(0.0,34.0))).clicked(){
                                             open_direct=Some(source.clone());
                                         }
+                                        if direct_package && ui.add_enabled(available &&
+                                            (self.unity_paths_scan.is_none() || unity_direct_open),
+                                            egui::Button::new(tr(unity_folders_action_label(unity_direct_open)))
+                                                .min_size(egui::vec2(0.0,34.0))).clicked(){
+                                            inspect_unity=Some((source.clone(),None));
+                                        }
                                         if ui.button(tr("Desvincular")).clicked(){detach=Some(file.id);}
                                     });
+                                    if direct_package && unity_direct_open {
+                                        show_unity_paths_result(ui,&self.unity_paths_label,
+                                            self.unity_paths_scan.is_some(),
+                                            self.unity_paths_preview.as_ref(),
+                                            self.unity_paths_error.as_deref());
+                                    }
                                     if expanded && is_archive{
                                         ui.add_space(10.0);ui.separator();ui.add_space(7.0);
                                         if self.archive_scan.is_some(){
@@ -1181,13 +1261,18 @@ impl BoothApp {
                                                         .saturating_add(preview.inner_archives.iter()
                                                             .filter(|item|item.chain.len()==1).count())
                                                         .saturating_add(usize::from(preview.root_hidden_files>0));
+                                                    // Package rows have a separate action toolbar.
+                                                    // Budget two lines for each visible package.
+                                                    let row_units=rows.saturating_add(preview.root_files.iter()
+                                                        .filter(|item|item.package.is_some()).count());
                                                     let tree_height=archive_tree_height(
-                                                        rows,ui.ctx().content_rect().height());
+                                                        row_units,ui.ctx().content_rect().height());
                                                     if rows<=2 {
                                                         // A short list needs no inner scroll area:
                                                         // avoid the large empty bottom under one file.
                                                         show_zip_tree(ui,preview,&[],&source,busy,
-                                                            &mut open_nested);
+                                                            self.unity_paths_key.as_deref(),self.unity_paths_scan.is_some(),
+                                                            &mut open_nested,&mut inspect_unity);
                                                     }else{
                                                         egui::ScrollArea::vertical()
                                                             .id_salt(("zip-insides-tree",file.id))
@@ -1196,10 +1281,20 @@ impl BoothApp {
                                                             .auto_shrink([false,false])
                                                             .show(ui,|ui|{
                                                                 show_zip_tree(ui,preview,&[],
-                                                                    &source,busy,&mut open_nested);
+                                                                    &source,busy,
+                                                                    self.unity_paths_key.as_deref(),
+                                                                    self.unity_paths_scan.is_some(),
+                                                                    &mut open_nested,&mut inspect_unity);
                                                             });
                                                     }
                                                 });
+                                            if self.unity_paths_key.as_ref().is_some_and(|key|
+                                                key.starts_with(&format!("{}|nested|",source.display()))) {
+                                                show_unity_paths_result(ui,&self.unity_paths_label,
+                                                    self.unity_paths_scan.is_some(),
+                                                    self.unity_paths_preview.as_ref(),
+                                                    self.unity_paths_error.as_deref());
+                                            }
                                         }else{
                                             ui.label(RichText::new(tr("No hay vista previa disponible."))
                                                 .color(colors().muted));
@@ -1239,6 +1334,9 @@ impl BoothApp {
         }
         if let Some((archive,entry))=open_nested{
             self.launch_unity_package(archive,entry,id);
+        }
+        if let Some((source,package))=inspect_unity{
+            self.toggle_unity_paths(source,package);
         }
         if let Some(path)=show_path{
             match reveal_file(&path){Ok(())=>self.status="Ubicación solicitada al explorador".into(),
@@ -2072,6 +2170,7 @@ impl eframe::App for BoothApp {
             }
         }
         self.poll_archive_scan();
+        self.poll_unity_paths(ctx);
         self.poll_cover_results(ctx);
         if self.favorites_dirty {
             self.favorites_dirty=false;
@@ -2314,6 +2413,172 @@ mod archive_tree_layout_tests {
     }
 }
 
+
+fn unity_folders_action_label(is_visible:bool)->&'static str {
+    if is_visible {"Ocultar carpetas en Unity"} else {"Ver carpetas en Unity"}
+}
+
+#[cfg(test)]
+mod unity_folders_toggle_tests {
+    use super::{unity_folders_action_label,unity_paths_id};
+    use std::path::Path;
+
+    #[test]
+    fn button_label_changes_to_hide_while_preview_is_open() {
+        assert_eq!(unity_folders_action_label(false),"Ver carpetas en Unity");
+        assert_eq!(unity_folders_action_label(true),"Ocultar carpetas en Unity");
+    }
+    #[test]
+    fn selection_identity_is_stable_for_direct_packages() {
+        assert_eq!(unity_paths_id(Path::new("example.unitypackage"),None),
+            unity_paths_id(Path::new("example.unitypackage"),None));
+        assert_ne!(unity_paths_id(Path::new("other.unitypackage"),None),
+            unity_paths_id(Path::new("example.unitypackage"),None));
+    }
+}
+
+fn unity_paths_id(source:&Path,package:Option<&UnityPackage>)->String {
+    match package {
+        Some(package)=>format!("{}|nested|{}|{}|{:?}|{}",
+            source.display(),package.name,package.index,package.zip_chain,package.crc32),
+        None=>format!("{}|direct",source.display()),
+    }
+}
+
+/// Compact themed read-only folder preview. No Unity application or script
+/// is launched; clipboard buttons copy exact folder names from the package.
+fn show_unity_paths_result(
+    ui:&mut egui::Ui,label:&str,loading:bool,
+    preview:Option<&UnityPathsPreview>,error:Option<&str>
+) {
+    ui.add_space(9.0);
+    let full_width=ui.available_width();
+    egui::Frame::new().fill(colors().card)
+        .stroke(egui::Stroke::new(1.0,colors().stroke))
+        .corner_radius(8).inner_margin(12).show(ui,|ui|{
+            // The preview is a full-width section of the inspector, not a
+            // floating content-sized card alongside the package list.
+            ui.set_min_width((full_width-24.0).max(1.0));
+            ui.label(RichText::new(tr("Carpetas de importación en Unity"))
+                .strong().size(15.0).color(colors().accent));
+            ui.add(egui::Label::new(RichText::new(label)
+                .size(12.0).color(colors().text)).truncate()).on_hover_text(label);
+            ui.label(RichText::new(tr("Rutas originales del paquete; pueden diferir del proyecto Unity actual."))
+                .size(12.0).color(colors().muted));
+            if loading {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(tr("Examinando rutas del UnityPackage..."));
+                });
+            } else if let Some(error)=error {
+                // Localize inspector diagnostics at display time so changing
+                // language also updates an already-open error panel.
+                let visible_error=i18n::tr_unitypackage_error(error);
+                ui.label(RichText::new(format!("{} {visible_error}",
+                    tr("No se pudieron leer las rutas del UnityPackage:")))
+                    .size(12.0).color(colors().muted));
+            } else if let Some(preview)=preview {
+                if preview.main_folders.is_empty() {
+                    ui.label(RichText::new(tr("No contiene rutas válidas dentro de Assets/."))
+                        .size(12.0).color(colors().muted));
+                } else {
+                    ui.label(RichText::new(format!("{}: {}",
+                        tr("Archivos con ruta en Assets/"),preview.asset_count))
+                        .size(12.0).color(colors().muted));
+                    if preview.skipped_paths>0 {
+                        ui.label(RichText::new(format!("{}: {}",
+                            tr("Rutas fuera de Assets/ ignoradas"),preview.skipped_paths))
+                            .size(12.0).color(colors().muted));
+                    }
+                    ui.label(RichText::new(tr("Carpetas principales")).strong()
+                        .color(colors().text).size(13.0));
+                    for folder in &preview.main_folders {
+                        unity_folder_row(ui,folder);
+                    }
+                    if preview.folders!=preview.main_folders {
+                        egui::CollapsingHeader::new(tr("Carpetas exactas"))
+                            .id_salt(("unity-paths-exact",label))
+                            .show(ui,|ui|{
+                                // A few folders need no second scroll area.
+                                // Large packages get a viewport-relative list that
+                                // shows many more paths than the former 245 pt cap.
+                                if let Some(height)=unity_folders_scroll_height(
+                                    preview.folders.len(),ui.ctx().content_rect().height()
+                                ) {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt(("unity-exact-scroll",label))
+                                        .min_scrolled_height(height)
+                                        .max_height(height)
+                                        .auto_shrink([false,false])
+                                        .show(ui,|ui|{
+                                            for folder in &preview.folders {
+                                                unity_folder_row(ui,folder);
+                                            }
+                                        });
+                                } else {
+                                    for folder in &preview.folders {
+                                        unity_folder_row(ui,folder);
+                                    }
+                                }
+                            });
+                    }
+                }
+            }
+        });
+}
+
+/// Keep small lists content-sized and make large lists comfortable to browse.
+/// This is intentionally independent of display scale and package filename.
+fn unity_folders_scroll_height(count:usize,viewport_height:f32)->Option<f32> {
+    if count<=10 {None}
+    else {Some((viewport_height*0.65).clamp(320.0,500.0))}
+}
+
+#[cfg(test)]
+mod unity_folder_layout_tests {
+    use super::unity_folders_scroll_height;
+
+    #[test]
+    fn short_lists_do_not_create_nested_scrollbars() {
+        assert_eq!(unity_folders_scroll_height(0,650.0),None);
+        assert_eq!(unity_folders_scroll_height(10,650.0),None);
+    }
+
+    #[test]
+    fn long_lists_show_a_taller_scrollable_viewport() {
+        let height=unity_folders_scroll_height(11,650.0).expect("long list has a scroll");
+        assert!((height-422.5).abs()<0.01);
+        assert_eq!(unity_folders_scroll_height(100,1200.0),Some(500.0));
+        assert_eq!(unity_folders_scroll_height(11,400.0),Some(320.0));
+    }
+}
+
+fn unity_folder_row(ui:&mut egui::Ui,folder:&str) {
+    ui.horizontal(|ui| {
+        icon(ui,Icon::Archive,colors().accent,13.0);
+        let copy_width=105.0;
+        let name_width=(ui.available_width()-copy_width-ui.spacing().item_spacing.x)
+            .max(70.0);
+        // Reserve the full column for consistent Copy buttons. ui.put()
+        // uses a centered-and-justified layout; instead, put the truncated
+        // label in a left-to-right child anchored to this reserved rectangle.
+        let (name_rect,_)=ui.allocate_exact_size(
+            egui::vec2(name_width,30.0),egui::Sense::hover());
+        let mut label_ui=ui.new_child(
+            egui::UiBuilder::new().id_salt(("unity-folder-label",folder))
+                .max_rect(name_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center))
+        );
+        label_ui.add(egui::Label::new(
+            RichText::new(folder).size(12.0).color(colors().text)
+        ).truncate().halign(egui::Align::LEFT)).on_hover_text(folder);
+        if ui.add_sized([copy_width,30.0],egui::Button::new(tr("Copiar ruta")))
+            .clicked() {
+            ui.ctx().copy_text(folder.to_owned());
+        }
+    });
+}
+
 /// Render ZIPs as a real expandable hierarchy, including regular files even
 /// if they have no .unitypackage. ZIPs remain on disk; this only draws metadata.
 fn show_zip_tree(
@@ -2322,7 +2587,10 @@ fn show_zip_tree(
     parent:&[package_inspect::NestedZip],
     source:&Path,
     busy:bool,
+    active_unity_paths_key:Option<&str>,
+    unity_paths_scanning:bool,
     open_package:&mut Option<(PathBuf,UnityPackage)>,
+    inspect_package:&mut Option<(PathBuf,Option<UnityPackage>)>,
 ) {
     for child in preview.inner_archives.iter().filter(|node| {
         node.chain.len()==parent.len()+1 && node.chain.starts_with(parent)
@@ -2357,7 +2625,8 @@ fn show_zip_tree(
                         ui.label(RichText::new(tr("Este ZIP está vacío o no contiene archivos seguros."))
                             .size(12.0).color(colors().muted));
                     }
-                    show_zip_tree(ui,preview,&child.chain,source,busy,open_package);
+                    show_zip_tree(ui,preview,&child.chain,source,busy,active_unity_paths_key,
+                        unity_paths_scanning,open_package,inspect_package);
                 }
             });
         response.header_response.on_hover_text(&last.name);
@@ -2372,19 +2641,37 @@ fn show_zip_tree(
         }
     };
     for file in files {
-        ui.horizontal_wrapped(|ui|{
-            icon(ui,Icon::File,
-                if file.package.is_some(){colors().accent}else{colors().muted},15.0);
-            let text=RichText::new(format!("{}  ({})",
-                file.name,human_size(file.size as i64))).size(12.0)
-                .color(if file.package.is_some(){colors().text}else{colors().muted});
-            ui.add(egui::Label::new(text).wrap()).on_hover_text(&file.name);
+        // The filename is independent of the actions. Long Japanese product
+        // names cannot push a single button onto the next line.
+        ui.vertical(|ui|{
+            ui.spacing_mut().item_spacing.y=3.0;
+            ui.horizontal(|ui|{
+                icon(ui,Icon::File,
+                    if file.package.is_some(){colors().accent}else{colors().muted},15.0);
+                let text=RichText::new(format!("{}  ({})",
+                    file.name,human_size(file.size as i64))).size(12.0)
+                    .color(if file.package.is_some(){colors().text}else{colors().muted});
+                ui.add(egui::Label::new(text).truncate())
+                    .on_hover_text(&file.name);
+            });
             if let Some(package)=&file.package {
-                if ui.add_enabled(!busy && package.size<=package_inspect::MAX_PACKAGE_BYTES,
-                    egui::Button::new(tr("Extraer y abrir"))
-                        .min_size(egui::vec2(0.0,32.0))).clicked(){
-                    *open_package=Some((source.to_path_buf(),package.clone()));
-                }
+                ui.horizontal(|ui|{
+                    // Two related buttons share a stable action row even when
+                    // file paths are long or contain multibyte characters.
+                    ui.add_space(23.0);
+                    if ui.add_enabled(!busy && package.size<=package_inspect::MAX_PACKAGE_BYTES,
+                        egui::Button::new(tr("Extraer y abrir"))
+                            .min_size(egui::vec2(0.0,32.0))).clicked(){
+                        *open_package=Some((source.to_path_buf(),package.clone()));
+                    }
+                    let unity_open=active_unity_paths_key
+                        ==Some(unity_paths_id(source,Some(package)).as_str());
+                    if ui.add_enabled(!busy && (!unity_paths_scanning || unity_open),
+                        egui::Button::new(tr(unity_folders_action_label(unity_open)))
+                            .min_size(egui::vec2(0.0,32.0))).clicked(){
+                        *inspect_package=Some((source.to_path_buf(),Some(package.clone())));
+                    }
+                });
             }
         });
     }

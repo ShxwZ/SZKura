@@ -8,6 +8,7 @@ pub mod migration;
 pub mod updater;
 
 pub mod package_inspect;
+pub mod unitypackage_inspect;
 
 pub mod quick_import;
 
