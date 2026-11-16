@@ -390,6 +390,38 @@ fn translate_archive_counts(message:&str)->Option<String>{
         parsed[2],parsed[3],if parsed[3]==1{"package"}else{"packages"},trailing
     ))
 }
+/// Error messages produced by the read-only UnityPackage pathname inspector.
+/// Match whole error-chain segments, not substrings: filenames, local paths and
+/// raw OS diagnostics must never be modified by the UI translator.
+const UNITYPACKAGE_READER_ERRORS:&[(&str,&str)]=&[
+    ("No se pudo abrir el UnityPackage","Could not open UnityPackage"),
+    ("No es un archivo UnityPackage regular","Not a regular UnityPackage file"),
+    ("El UnityPackage supera el límite de inspección de 2 GiB","UnityPackage exceeds the 2 GiB inspection limit"),
+    ("No se pudo leer el TAR del UnityPackage","Could not read the UnityPackage TAR"),
+    ("Entrada TAR no válida en el UnityPackage","Invalid TAR entry in UnityPackage"),
+    ("Ruta TAR no válida","Invalid TAR path"),
+    ("El UnityPackage contiene demasiadas entradas","UnityPackage contains too many entries"),
+    ("Un pathname de UnityPackage excede el límite de 16 KiB","A UnityPackage pathname exceeds the 16 KiB limit"),
+    ("No se pudo leer un pathname","Could not read a pathname"),
+    ("Un pathname no es UTF-8 válido","A pathname is not valid UTF-8"),
+    ("El UnityPackage contiene demasiados pathnames","UnityPackage contains too many pathnames"),
+    ("El UnityPackage contiene demasiadas carpetas distintas","UnityPackage contains too many distinct folders"),
+];
+
+/// Localize only known UnityPackage error-chain messages, preserving paths and
+/// any diagnostic details from the OS, TAR/GZIP libraries or nested archives.
+pub fn translate_unitypackage_error(language:Language,message:&str)->String {
+    if language==Language::Spanish {return message.to_owned();}
+    message.split(": ").map(|part| {
+        UNITYPACKAGE_READER_ERRORS.iter()
+            .find_map(|(spanish,english)|(*spanish==part).then_some(*english))
+            .unwrap_or(part)
+    }).collect::<Vec<_>>().join(": ")
+}
+pub fn tr_unitypackage_error(message:&str)->String {
+    translate_unitypackage_error(selected(),message)
+}
+
 pub fn tr_message(message:&str)->std::borrow::Cow<'_,str>{
     translate_message(selected(),message)
 }
@@ -509,6 +541,27 @@ mod tests{
             assert_eq!(translate(Language::English, es), en);
         }
     }
+    #[test]
+    fn unity_package_reader_errors_are_localized_in_both_languages() {
+        for &(spanish,english) in UNITYPACKAGE_READER_ERRORS {
+            assert_eq!(translate_unitypackage_error(Language::Spanish,spanish),spanish);
+            assert_eq!(translate_unitypackage_error(Language::English,spanish),english);
+        }
+        let nested="No se pudo leer el TAR del UnityPackage: Entrada TAR no válida en el UnityPackage: invalid gzip header";
+        assert_eq!(
+            translate_unitypackage_error(Language::English,nested),
+            "Could not read the UnityPackage TAR: Invalid TAR entry in UnityPackage: invalid gzip header"
+        );
+        // A path happens to contain a translated phrase: it is user data, not
+        // an error-chain label, and must remain unchanged.
+        let open_error="No se pudo abrir el UnityPackage: /home/user/No se pudo leer un pathname/asset.unitypackage: Permission denied";
+        assert_eq!(
+            translate_unitypackage_error(Language::English,open_error),
+            "Could not open UnityPackage: /home/user/No se pudo leer un pathname/asset.unitypackage: Permission denied"
+        );
+        assert_eq!(translate_unitypackage_error(Language::English,"unknown failure"),"unknown failure");
+    }
+
     #[test]
     fn navigation_and_settings_translate_without_changing_catalog_ids(){
         assert_eq!(translate(Language::English,"Todos los productos"),"All products");
