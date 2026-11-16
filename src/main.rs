@@ -1249,8 +1249,12 @@ impl BoothApp {
                                                         .saturating_add(preview.inner_archives.iter()
                                                             .filter(|item|item.chain.len()==1).count())
                                                         .saturating_add(usize::from(preview.root_hidden_files>0));
+                                                    // Package rows have a separate action toolbar.
+                                                    // Budget two lines for each visible package.
+                                                    let row_units=rows.saturating_add(preview.root_files.iter()
+                                                        .filter(|item|item.package.is_some()).count());
                                                     let tree_height=archive_tree_height(
-                                                        rows,ui.ctx().content_rect().height());
+                                                        row_units,ui.ctx().content_rect().height());
                                                     if rows<=2 {
                                                         // A short list needs no inner scroll area:
                                                         // avoid the large empty bottom under one file.
