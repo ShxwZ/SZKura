@@ -1046,6 +1046,7 @@ impl BoothApp {
         let(mut inspect_zip,mut force_reinspect,mut open_direct):
             (Option<String>,Option<String>,Option<PathBuf>)=(None,None,None);
         let mut open_nested:Option<(PathBuf,UnityPackage)>=None;
+        let mut inspect_unity:Option<(PathBuf,Option<UnityPackage>)>=None;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(24,18)))
             .show(ctx,|ui|{
@@ -1180,8 +1181,20 @@ impl BoothApp {
                                                 .min_size(egui::vec2(0.0,34.0))).clicked(){
                                             open_direct=Some(source.clone());
                                         }
+                                        if direct_package && ui.add_enabled(available && self.unity_paths_scan.is_none(),
+                                            egui::Button::new(tr("Ver carpetas en Unity"))
+                                                .min_size(egui::vec2(0.0,34.0))).clicked(){
+                                            inspect_unity=Some((source.clone(),None));
+                                        }
                                         if ui.button(tr("Desvincular")).clicked(){detach=Some(file.id);}
                                     });
+                                    if direct_package && self.unity_paths_key.as_deref()
+                                        ==Some(unity_paths_id(&source,None).as_str()) {
+                                        show_unity_paths_result(ui,&self.unity_paths_label,
+                                            self.unity_paths_scan.is_some(),
+                                            self.unity_paths_preview.as_ref(),
+                                            self.unity_paths_error.as_deref());
+                                    }
                                     if expanded && is_archive{
                                         ui.add_space(10.0);ui.separator();ui.add_space(7.0);
                                         if self.archive_scan.is_some(){
@@ -1242,7 +1255,7 @@ impl BoothApp {
                                                         // A short list needs no inner scroll area:
                                                         // avoid the large empty bottom under one file.
                                                         show_zip_tree(ui,preview,&[],&source,busy,
-                                                            &mut open_nested);
+                                                            &mut open_nested,&mut inspect_unity);
                                                     }else{
                                                         egui::ScrollArea::vertical()
                                                             .id_salt(("zip-insides-tree",file.id))
@@ -1251,10 +1264,18 @@ impl BoothApp {
                                                             .auto_shrink([false,false])
                                                             .show(ui,|ui|{
                                                                 show_zip_tree(ui,preview,&[],
-                                                                    &source,busy,&mut open_nested);
+                                                                    &source,busy,&mut open_nested,
+                                                                    &mut inspect_unity);
                                                             });
                                                     }
                                                 });
+                                            if self.unity_paths_key.as_ref().is_some_and(|key|
+                                                key.starts_with(&format!("{}|nested|",source.display()))) {
+                                                show_unity_paths_result(ui,&self.unity_paths_label,
+                                                    self.unity_paths_scan.is_some(),
+                                                    self.unity_paths_preview.as_ref(),
+                                                    self.unity_paths_error.as_deref());
+                                            }
                                         }else{
                                             ui.label(RichText::new(tr("No hay vista previa disponible."))
                                                 .color(colors().muted));
@@ -1294,6 +1315,9 @@ impl BoothApp {
         }
         if let Some((archive,entry))=open_nested{
             self.launch_unity_package(archive,entry,id);
+        }
+        if let Some((source,package))=inspect_unity{
+            self.inspect_unity_paths(source,package);
         }
         if let Some(path)=show_path{
             match reveal_file(&path){Ok(())=>self.status="Ubicación solicitada al explorador".into(),
