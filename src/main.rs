@@ -2458,17 +2458,57 @@ fn show_unity_paths_result(
                         egui::CollapsingHeader::new(tr("Carpetas exactas"))
                             .id_salt(("unity-paths-exact",label))
                             .show(ui,|ui|{
-                                egui::ScrollArea::vertical().id_salt(("unity-exact-scroll",label))
-                                    .max_height(245.0).show(ui,|ui|{
-                                        for folder in &preview.folders {
-                                            unity_folder_row(ui,folder);
-                                        }
-                                    });
+                                // A few folders need no second scroll area.
+                                // Large packages get a viewport-relative list that
+                                // shows many more paths than the former 245 pt cap.
+                                if let Some(height)=unity_folders_scroll_height(
+                                    preview.folders.len(),ui.ctx().content_rect().height()
+                                ) {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt(("unity-exact-scroll",label))
+                                        .min_scrolled_height(height)
+                                        .max_height(height)
+                                        .auto_shrink([false,false])
+                                        .show(ui,|ui|{
+                                            for folder in &preview.folders {
+                                                unity_folder_row(ui,folder);
+                                            }
+                                        });
+                                } else {
+                                    for folder in &preview.folders {
+                                        unity_folder_row(ui,folder);
+                                    }
+                                }
                             });
                     }
                 }
             }
         });
+}
+
+/// Keep small lists content-sized and make large lists comfortable to browse.
+/// This is intentionally independent of display scale and package filename.
+fn unity_folders_scroll_height(count:usize,viewport_height:f32)->Option<f32> {
+    if count<=10 {None}
+    else {Some((viewport_height*0.65).clamp(320.0,500.0))}
+}
+
+#[cfg(test)]
+mod unity_folder_layout_tests {
+    use super::unity_folders_scroll_height;
+
+    #[test]
+    fn short_lists_do_not_create_nested_scrollbars() {
+        assert_eq!(unity_folders_scroll_height(0,650.0),None);
+        assert_eq!(unity_folders_scroll_height(10,650.0),None);
+    }
+
+    #[test]
+    fn long_lists_show_a_taller_scrollable_viewport() {
+        assert_eq!(unity_folders_scroll_height(11,650.0),Some(422.5));
+        assert_eq!(unity_folders_scroll_height(100,1200.0),Some(500.0));
+        assert_eq!(unity_folders_scroll_height(11,400.0),Some(320.0));
+    }
 }
 
 fn unity_folder_row(ui:&mut egui::Ui,folder:&str) {
@@ -2477,9 +2517,18 @@ fn unity_folder_row(ui:&mut egui::Ui,folder:&str) {
         let copy_width=105.0;
         let name_width=(ui.available_width()-copy_width-ui.spacing().item_spacing.x)
             .max(70.0);
-        ui.add_sized([name_width,25.0],egui::Label::new(
-            RichText::new(folder).size(12.0).color(colors().text)
-        ).truncate()).on_hover_text(folder);
+        // add_sized would center short labels inside this reserved column.
+        // Explicit left-to-right layout keeps every Assets/ path left-aligned,
+        // while retaining a fixed-width right-hand copy action.
+        ui.allocate_ui_with_layout(
+            egui::vec2(name_width,30.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui|{
+                ui.add(egui::Label::new(
+                    RichText::new(folder).size(12.0).color(colors().text)
+                ).truncate()).on_hover_text(folder);
+            }
+        );
         if ui.add_sized([copy_width,30.0],egui::Button::new(tr("Copiar ruta")))
             .clicked() {
             ui.ctx().copy_text(folder.to_owned());
