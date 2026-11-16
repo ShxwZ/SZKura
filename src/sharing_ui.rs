@@ -133,7 +133,7 @@ impl SharingUi {
         if !self.enabled || self.active.as_ref().is_none_or(ShareSession::expired) {
             return;
         }
-        let Some(title) = self.active_title.as_deref() else { return; };
+        let Some(title) = self.active_title.clone() else { return; };
         let display = if title.chars().count() > 54 {
             format!("{}…",title.chars().take(54).collect::<String>())
         } else {
@@ -144,7 +144,7 @@ impl SharingUi {
             ui.label(RichText::new(tr("Compartiendo ahora:"))
                 .strong().size(12.5).color(theme::colors().accent));
             ui.label(RichText::new(display).size(12.5).color(theme::colors().text))
-                .on_hover_text(title);
+                .on_hover_text(&title);
             if action(ui, Icon::Link, "Ver ficha compartida", false) {
                 self.active_notice = true;
             }
