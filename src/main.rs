@@ -2471,7 +2471,10 @@ fn show_unity_paths_result(
                     ui.label(tr("Examinando rutas del UnityPackage..."));
                 });
             } else if let Some(error)=error {
-                ui.label(RichText::new(format!("{} {error}",
+                // Localize inspector diagnostics at display time so changing
+                // language also updates an already-open error panel.
+                let visible_error=i18n::tr_unitypackage_error(error);
+                ui.label(RichText::new(format!("{} {visible_error}",
                     tr("No se pudieron leer las rutas del UnityPackage:")))
                     .size(12.0).color(colors().muted));
             } else if let Some(preview)=preview {
