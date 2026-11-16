@@ -321,6 +321,8 @@ mod tests {
 
     const A:&str="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B:&str="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const C:&str="cccccccccccccccccccccccccccccccc";
+    const D:&str="dddddddddddddddddddddddddddddddd";
     fn add_entry<W:Write>(builder:&mut Builder<W>,path:&str,data:&[u8]) {
         let mut header = tar::Header::new_gnu();
         header.set_mode(0o644);
@@ -339,6 +341,14 @@ mod tests {
             }else{format!("fileFormatVersion: 2\nguid: {guid}\nDefaultImporter:\n  userData: \n")};
             add_entry(&mut tar,&format!("{guid}/asset.meta"),meta.as_bytes());
             let path=if guid==A {"Assets/Outfit/top.prefab"} else {"Assets/Other/file.txt"};
+            add_entry(&mut tar,&format!("{guid}/pathname"),path.as_bytes());
+        }
+        // Real Unity folders have their own GUID/pathname/asset.meta,
+        // but no GUID/asset payload. Both root folders exist in this
+        // fixture: the exporter must tag C only, never D or the files.
+        for (guid,path) in [(C,"Assets/Outfit"),(D,"Assets/Other")] {
+            let meta=format!("fileFormatVersion: 2\nguid: {guid}\nfolderAsset: yes\nlabels:\n- CreatorTag\nDefaultImporter:\n  userData: \n");
+            add_entry(&mut tar,&format!("{guid}/asset.meta"),meta.as_bytes());
             add_entry(&mut tar,&format!("{guid}/pathname"),path.as_bytes());
         }
         let gz=tar.into_inner().unwrap();
@@ -391,17 +401,18 @@ mod tests {
         fixture(&src,true);
         let old=contents(&src);
         let report=export_labeled_unitypackage(&src,&dst,"Ropa").unwrap();
-        assert_eq!(report.labeled_assets,2);
+        assert_eq!(report.labeled_assets,1);
         assert_eq!(report.already_labeled,0);
         let new=contents(&dst);
         assert_eq!(old.len(),new.len());
         for (name,bytes) in old {
-            if name.ends_with("/asset.meta") {
+            if name==format!("{C}/asset.meta") {
                 let s=String::from_utf8(new.get(&name).unwrap().clone()).unwrap();
                 assert!(s.contains("CreatorTag"));
                 assert!(s.contains("SZKura_Ropa"));
-                assert!(s.contains(&format!("guid: {}",name.split('/').next().unwrap())));
+                assert!(s.contains(&format!("guid: {C}")));
             } else {
+                // Asset-level labels and other folder metadata are untouched.
                 assert_eq!(new.get(&name).unwrap(),&bytes);
             }
         }
@@ -431,7 +442,7 @@ mod tests {
         let labeled=contents(&exported);
         let src_files=contents(&src);
         for (name,data) in src_files {
-            if name.ends_with("/asset.meta") {
+            if name==format!("{C}/asset.meta") {
                 let content=String::from_utf8(labeled[&name].clone()).unwrap();
                 assert!(content.contains("- CreatorTag"));
                 assert!(content.contains("- SZKura_Ropa"));
@@ -442,8 +453,62 @@ mod tests {
         assert_eq!(cached_labeled_unitypackage(&src,&cache,"Ropa").unwrap(),exported);
         let other=cached_labeled_unitypackage(&src,&cache,"Pelo").unwrap();
         assert_ne!(other,exported);
-        assert!(String::from_utf8(contents(&other)[&format!("{A}/asset.meta")].clone())
+        assert!(String::from_utf8(contents(&other)[&format!("{C}/asset.meta")].clone())
             .unwrap().contains("- SZKura_Pelo"));
+        assert!(!String::from_utf8(contents(&other)[&format!("{A}/asset.meta")].clone())
+            .unwrap().contains("SZKura_Pelo"));
+        // Versioned key ensures the old broad-tagging cache is never reused.
+        assert!(other.file_name().unwrap().to_string_lossy().starts_with("labeled-folder-v2-"));
+    }
+
+    #[test]
+    fn falls_back_to_first_included_subfolder_when_top_level_is_implicit() {
+        let dir=tempfile::tempdir().unwrap();
+        let src=dir.path().join("implicit-parent.unitypackage");
+        let dst=dir.path().join("tagged.unitypackage");
+        let gz=GzEncoder::new(File::create(&src).unwrap(),Compression::default());
+        let mut tar=Builder::new(gz);
+        for (guid,path,payload) in [
+            (A,"Assets/Outfit/Sub/Shaders/effect.shader",Some(b"shader".as_slice())),
+            (B,"Assets/Outfit/Sub/prefab.prefab",Some(b"prefab".as_slice())),
+            (C,"Assets/Outfit/Sub",None),
+            (D,"Assets/Outfit/Sub/Shaders",None)
+        ] {
+            if let Some(asset)=payload {add_entry(&mut tar,&format!("{guid}/asset"),asset);}
+            let meta=format!("fileFormatVersion: 2\nguid: {guid}\nDefaultImporter:\n  userData: \n");
+            add_entry(&mut tar,&format!("{guid}/asset.meta"),meta.as_bytes());
+            add_entry(&mut tar,&format!("{guid}/pathname"),path.as_bytes());
+        }
+        tar.into_inner().unwrap().finish().unwrap();
+        let report=export_labeled_unitypackage(&src,&dst,"Pelo").unwrap();
+        assert_eq!(report.labeled_assets,1);
+        let original=contents(&src);
+        let copy=contents(&dst);
+        for (key,original_bytes) in original {
+            if key==format!("{C}/asset.meta") {
+                let text=String::from_utf8(copy[&key].clone()).unwrap();
+                assert!(text.contains("- SZKura_Pelo"));
+            } else {
+                assert_eq!(copy[&key],original_bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn no_folder_metadata_must_not_label_all_individual_files() {
+        let dir=tempfile::tempdir().unwrap();
+        let src=dir.path().join("no-folders.unitypackage");
+        let dst=dir.path().join("output.unitypackage");
+        let gz=GzEncoder::new(File::create(&src).unwrap(),Compression::default());
+        let mut tar=Builder::new(gz);
+        add_entry(&mut tar,&format!("{A}/asset"),b"material");
+        let meta=format!("fileFormatVersion: 2\nguid: {A}\nDefaultImporter:\n");
+        add_entry(&mut tar,&format!("{A}/asset.meta"),meta.as_bytes());
+        add_entry(&mut tar,&format!("{A}/pathname"),b"Assets/Outfit/file.prefab");
+        tar.into_inner().unwrap().finish().unwrap();
+        let error=export_labeled_unitypackage(&src,&dst,"Ropa").unwrap_err();
+        assert!(error.to_string().contains("carpeta de Unity"));
+        assert!(!dst.exists());
     }
 
     #[test]
