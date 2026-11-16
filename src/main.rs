@@ -4,6 +4,8 @@ mod ui_support;
 mod cover_cache;
 mod theme;
 mod i18n;
+mod sharing_ui;
+use sharing_ui::SharingUi;
 use cover_cache::{CoverRequest, CoverResult};
 use theme::{ThemeKind,colors};
 use i18n::{Language,tr};
@@ -64,6 +66,7 @@ struct CoverTextures {
 struct BoothApp {
     paths: AppPaths,
     db: Catalog,
+    sharing: SharingUi,
     assets: Vec<Asset>,
     total: i64,
     filtered: i64,
@@ -154,6 +157,7 @@ impl BoothApp {
         let configured=storage.as_ref().is_some_and(|p|p.is_dir());
         let check_updates_on_start=db.preference("check_updates_on_start",true)?;
         let auto_install_updates=db.preference("auto_install_updates",false)?;
+        let sharing_enabled=db.preference("sharing_enabled",false)?;
         let delete_sources=db.preference("delete_sources_after_import",false)?;
         if let Some(root)=storage.as_ref(){paths.library=root.clone();}
         let (cover_job_tx, cover_result_rx)=cover_cache::spawn_workers(&cc.egui_ctx);
@@ -163,7 +167,7 @@ impl BoothApp {
         i18n::select(ui_language);
         Self::apply_theme(&cc.egui_ctx);
         let mut app=Self {
-            paths,db,assets:Vec::new(),total:0,filtered:0,filtered_bytes:0,
+            paths,db,sharing:SharingUi::new(sharing_enabled),assets:Vec::new(),total:0,filtered:0,filtered_bytes:0,
             query:String::new(),category:String::new(),avatar_filter:String::new(),
             avatar_options:Vec::new(),files_filter:FileFilter::All,displayed_limit:96,
             last_filters:(String::new(),String::new(),String::new(),FileFilter::All,false,false),
@@ -801,6 +805,9 @@ impl BoothApp {
                                 action(ui,Icon::Plus,"Nuevo producto",true)
                             }).inner;
                             if create{self.start_new();}
+                            if self.configured && ui.button("Importar enlace SZKura").clicked(){
+                                self.sharing.open_import();
+                            }
                         }
                     });
                 });
@@ -1050,6 +1057,10 @@ impl BoothApp {
                         ui.horizontal_wrapped(|ui|{
                             if ui.add_enabled(!busy,egui::Button::new(tr("Añadir archivos"))).clicked(){add_files=true;}
                             if ui.add_enabled(!busy,egui::Button::new(tr("Importar carpeta"))).clicked(){add_folder=true;}
+                            if ui.add_enabled(!busy && self.sharing.enabled && !attachments.is_empty(),
+                                egui::Button::new("Compartir temporalmente")).clicked(){
+                                self.sharing.open_share(id);
+                            }
                         });
                         let previous=self.delete_sources;
                         if ui.checkbox(&mut self.delete_sources,tr("Enviar los originales a la papelera tras copiar y verificar")).changed(){
@@ -1706,6 +1717,9 @@ impl BoothApp {
                 ui.label(RichText::new(tr("Antes de importar, SZKura guarda automáticamente una copia de recuperación de tu SQLite actual.")
                 ).color(colors().muted).size(11.5));
                 ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                self.sharing.settings_ui(ui,&mut self.db,
+                    self.paths.db.parent().unwrap_or(Path::new(".")));
+                ui.add_space(18.0);ui.separator();ui.add_space(8.0);
                 ui.label(RichText::new(tr("Versión y actualizaciones")).strong().size(17.0));
                 ui.horizontal_wrapped(|ui|{
                     ui.label(RichText::new(format!("{} {}",tr("Versión instalada:"),
@@ -2049,6 +2063,13 @@ impl eframe::App for BoothApp {
     fn update(&mut self,ctx:&egui::Context,_frame:&mut eframe::Frame) {
         self.poll_updates(ctx);
         self.process_finished(ctx);
+        if let Some(result)=self.sharing.poll(ctx) {
+            match result {
+                Ok(id)=>{let _=self.reload();self.select_id(id);
+                    self.status="Ficha transferida e importada correctamente".into();},
+                Err(error)=>self.status=format!("Error en transferencia: {error}"),
+            }
+        }
         self.poll_archive_scan();
         self.poll_cover_results(ctx);
         if self.favorites_dirty {
@@ -2089,6 +2110,8 @@ impl eframe::App for BoothApp {
         self.confirm_cache_dialog(ctx);
         self.confirm_source_dialog(ctx);
         self.confirm_restore_dialog(ctx);
+        self.sharing.render(ctx,self.paths.db.parent().unwrap_or(Path::new(".")),
+            &self.paths.db,&self.paths.library,&self.paths.covers);
         if self.receiver.is_some(){ctx.request_repaint_after(Duration::from_millis(150));}
     }
 }
