@@ -349,9 +349,21 @@ impl BoothApp {
     }
 
     fn poll_avatar_scan(&mut self,ctx:&egui::Context) {
-        if let Some(finished)=self.avatar_scan.as_ref().and_then(|rx|rx.try_recv().ok()){
+        let answer=self.avatar_scan.as_ref().and_then(|rx|match rx.try_recv(){
+            Ok(value)=>Some(Ok(value)),
+            Err(mpsc::TryRecvError::Disconnected)=>Some(Err(())),
+            Err(mpsc::TryRecvError::Empty)=>None,
+        });
+        if let Some(answer)=answer {
             self.avatar_scan=None;
             self.avatar_scan_cancel=None;
+            let finished=match answer {
+                Ok(finished)=>finished,
+                Err(())=>{
+                    self.status=tr("No se pudo completar el análisis.").into();
+                    return;
+                }
+            };
             if finished.generation!=self.avatar_scan_generation {
                 self.status=tr("Análisis cancelado.").into();
                 return;
