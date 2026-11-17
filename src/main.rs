@@ -352,7 +352,10 @@ impl BoothApp {
         if let Some(finished)=self.avatar_scan.as_ref().and_then(|rx|rx.try_recv().ok()){
             self.avatar_scan=None;
             self.avatar_scan_cancel=None;
-            if finished.generation!=self.avatar_scan_generation { return; }
+            if finished.generation!=self.avatar_scan_generation {
+                self.status=tr("Análisis cancelado.").into();
+                return;
+            }
             let unchanged_sources=match finished.target {
                 AvatarScanTarget::New=>self.new_files==finished.source_paths,
                 AvatarScanTarget::Edit(id)=>self.db.attachments_for(id)
