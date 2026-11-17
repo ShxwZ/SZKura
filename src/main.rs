@@ -365,7 +365,10 @@ impl BoothApp {
                 }
             };
             if finished.generation!=self.avatar_scan_generation {
-                self.status=tr("Análisis cancelado.").into();
+                // Navigation/save may have already reported a more relevant status.
+                if self.status==tr("Cancelando análisis...") {
+                    self.status=tr("Análisis cancelado.").into();
+                }
                 return;
             }
             let unchanged_sources=match finished.target {
