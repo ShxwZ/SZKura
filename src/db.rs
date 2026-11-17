@@ -1095,4 +1095,20 @@ mod tests {
         db.set_cover(id, "/manual-cover.png").unwrap();
         assert_eq!(db.get(id).unwrap().unwrap().image_path, "/manual-cover.png");
     }
+
+    #[test]
+    fn avatar_scan_uses_all_known_names_without_filter_limit() {
+        let (_tmp,mut db)=test_db();
+        for batch in 0..11 {
+            let id=db.create_product(&format!("Product {batch}"),"Otros").unwrap();
+            let names=(0..50).map(|i|format!("AVATAR_{:04}",batch*50+i))
+                .collect::<Vec<_>>().join(", ");
+            db.set_avatars(id,&names).unwrap();
+        }
+        assert_eq!(db.avatar_options().unwrap().len(),512);
+        let scan_names=db.avatar_names_for_scan().unwrap();
+        assert_eq!(scan_names.len(),550);
+        assert!(scan_names.contains(&"AVATAR_0549".to_owned()));
+    }
+
 }
