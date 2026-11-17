@@ -19,6 +19,14 @@ pub struct UnityPathsPreview {
 }
 
 pub fn inspect_unitypackage_paths(path: &Path) -> Result<UnityPathsPreview> {
+    inspect_unitypackage_paths_with(path, |_| {})
+}
+
+/// Visit each validated Unity asset pathname without retaining potentially
+/// thousands of lengthy paths in the regular UI preview.
+pub fn inspect_unitypackage_paths_with(
+    path: &Path, mut on_path: impl FnMut(&str),
+) -> Result<UnityPathsPreview> {
     let file = File::open(path)
         .with_context(|| format!("No se pudo abrir el UnityPackage: {}", path.display()))?;
     let metadata = file.metadata()?;
@@ -28,10 +36,16 @@ pub fn inspect_unitypackage_paths(path: &Path) -> Result<UnityPathsPreview> {
     if metadata.len() > crate::package_inspect::MAX_PACKAGE_BYTES {
         bail!("El UnityPackage supera el límite de inspección de 2 GiB");
     }
-    inspect_reader(BufReader::new(file))
+    inspect_reader_with(BufReader::new(file), &mut on_path)
 }
 
 fn inspect_reader(source: impl Read) -> Result<UnityPathsPreview> {
+    inspect_reader_with(source, |_| {})
+}
+
+fn inspect_reader_with(
+    source: impl Read, mut on_path: impl FnMut(&str),
+) -> Result<UnityPathsPreview> {
     // The cap applies to the entire decompressed stream, including TAR headers
     // and asset payloads skipped by the iterator. No files are written to disk.
     let gzip = GzDecoder::new(source);
@@ -64,6 +78,7 @@ fn inspect_reader(source: impl Read) -> Result<UnityPathsPreview> {
         entry.read_to_end(&mut bytes).context("No se pudo leer un pathname")?;
         let raw = std::str::from_utf8(&bytes).context("Un pathname no es UTF-8 válido")?;
         if let Some((root, folder)) = asset_folders(raw) {
+            on_path(raw.trim_end_matches(['\0', '\r', '\n']));
             asset_count += 1;
             if asset_count > MAX_PATHNAMES {
                 bail!("El UnityPackage contiene demasiados pathnames");
