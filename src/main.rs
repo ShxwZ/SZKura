@@ -274,13 +274,13 @@ impl BoothApp {
         }
     }
     /// Discard stale results and ask the background worker to stop at its next
-    /// safe interruption point. Navigation never waits on decompression.
+    /// safe interruption point. Keep its receiver until it has finished:
+    /// otherwise repeated Cancel/Scan clicks could spawn unlimited workers.
     fn cancel_avatar_scan(&mut self) {
-        if let Some(cancel)=self.avatar_scan_cancel.take() {
+        if let Some(cancel)=self.avatar_scan_cancel.as_ref() {
             cancel.store(true, Ordering::Relaxed);
+            self.avatar_scan_generation=self.avatar_scan_generation.wrapping_add(1);
         }
-        self.avatar_scan=None;
-        self.avatar_scan_generation=self.avatar_scan_generation.wrapping_add(1);
     }
 
     /// Explicit, asynchronous scan: never commits edits to SQLite.
@@ -1173,7 +1173,7 @@ impl BoothApp {
         if scan {
             if self.avatar_scan.is_some() {
                 self.cancel_avatar_scan();
-                self.status=tr("Análisis cancelado.").into();
+                self.status=tr("Cancelando análisis...").into();
             } else if let Some(id)=self.selected {
                 self.start_avatar_scan(AvatarScanTarget::Edit(id));
             }
@@ -1205,7 +1205,7 @@ impl BoothApp {
         if scan {
             if self.avatar_scan.is_some() {
                 self.cancel_avatar_scan();
-                self.status=tr("Análisis cancelado.").into();
+                self.status=tr("Cancelando análisis...").into();
             } else {
                 self.start_avatar_scan(AvatarScanTarget::New);
             }
