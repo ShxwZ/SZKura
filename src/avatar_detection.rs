@@ -1,17 +1,34 @@
-//! Infer compatible avatar labels from archive names and Unity pathname metadata.
-//! Never executes Unity content or rewrites linked assets.
-use std::{collections::HashSet, path::{Path, PathBuf}};
+//! Infer compatible avatars from archive filenames and Unity pathname metadata.
+//! No user files are modified, executed or permanently extracted.
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+};
 use crate::{import, package_inspect, unitypackage_inspect};
 
 const MAX_FILES: usize = 256;
+const MAX_WALK_ENTRIES: usize = 4_096;
+const MAX_WALK_DEPTH: usize = 12;
 const MAX_PACKAGES_PER_ARCHIVE: usize = 16;
-const MAX_PACKAGE_SCAN_BYTES: u64 = 512 * 1024 * 1024;
+// Resource budgets apply to the ENTIRE button click, not each attachment.
+const MAX_UNITY_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_TOTAL_UNITY_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_DEEP_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_TOTAL_DEEP_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub struct ScanResult {
     pub matches: Vec<String>,
     pub warnings: Vec<String>,
     pub scanned_files: usize,
+}
+
+#[derive(Default)]
+struct Budget {
+    unity_bytes: u64,
+    deep_archive_bytes: u64,
 }
 
 fn tokens(text: &str) -> Vec<String> {
@@ -21,7 +38,7 @@ fn tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Compare complete words (also multi-word avatar names) rather than substrings.
+/// Compare complete words, including multi-word avatar names, not substrings.
 pub fn name_mentions_avatar(path: &str, avatar: &str) -> bool {
     let filename = tokens(path);
     let expected = tokens(avatar);
@@ -29,50 +46,124 @@ pub fn name_mentions_avatar(path: &str, avatar: &str) -> bool {
         .any(|window| window == expected.as_slice())
 }
 
-fn detect_name(name: &str, known: &[String], found: &mut HashSet<String>) {
-    for avatar in known {
-        if !found.contains(avatar) && name_mentions_avatar(name, avatar) {
-            found.insert(avatar.clone());
+/// Compile the avatar vocabulary once. Previously each filename was tokenized
+/// once per avatar, causing quadratic allocations in large archives.
+struct Matcher {
+    names: Vec<String>,
+    words: Vec<Vec<String>>,
+    by_first_word: HashMap<String, Vec<usize>>,
+}
+impl Matcher {
+    fn new(known: &[String]) -> Self {
+        let mut seen = HashSet::new();
+        let mut names = Vec::new();
+        let mut words = Vec::new();
+        let mut by_first_word:HashMap<String,Vec<usize>> = HashMap::new();
+        for avatar in known {
+            let name = avatar.trim().to_uppercase();
+            let expected = tokens(&name);
+            if expected.is_empty() || !seen.insert(name.clone()) { continue; }
+            let index = names.len();
+            by_first_word.entry(expected[0].clone()).or_default().push(index);
+            names.push(name);
+            words.push(expected);
         }
+        Self { names, words, by_first_word }
+    }
+
+    fn detect(&self, name: &str, found: &mut HashSet<String>) {
+        // Untrusted archive filenames may be long; do not allocate or tokenize
+        // arbitrary megabytes of textual metadata per entry.
+        if name.len() > 16 * 1024 { return; }
+        let words = tokens(name);
+        for (position, word) in words.iter().enumerate() {
+            if let Some(candidates) = self.by_first_word.get(word) {
+                for &index in candidates {
+                    if !found.contains(&self.names[index])
+                        && words[position..].starts_with(&self.words[index]) {
+                        found.insert(self.names[index].clone());
+                    }
+                }
+            }
+        }
+    }
+
+    fn complete(&self, found: &HashSet<String>) -> bool {
+        found.len() == self.names.len()
     }
 }
 
-fn detect_unitypackage(path: &Path, known: &[String], found: &mut HashSet<String>)
-    -> anyhow::Result<()> {
+fn canceled(cancel: &AtomicBool) -> bool {
+    cancel.load(Ordering::Relaxed)
+}
+
+fn detect_unitypackage(
+    path: &Path, matcher: &Matcher, found: &mut HashSet<String>, cancel: &AtomicBool,
+) -> anyhow::Result<()> {
+    // Stop reading the gzip/TAR stream as soon as all names are detected or the
+    // user cancels. No Unity assets/scripts are extracted or executed.
     unitypackage_inspect::inspect_unitypackage_paths_with(path, |name| {
-        detect_name(name, known, found);
+        matcher.detect(name, found);
+        !matcher.complete(found) && !canceled(cancel)
     })?;
     Ok(())
 }
 
-fn scan_file(path: &Path, original_name: &str, known: &[String],
-    found: &mut HashSet<String>, warnings: &mut Vec<String>, scratch: &Path
+fn scan_file(
+    path: &Path, original_name: &str, matcher: &Matcher, found: &mut HashSet<String>,
+    warnings: &mut Vec<String>, scratch: &Path, budget: &mut Budget, cancel: &AtomicBool,
 ) {
-    // Managed copies can have a checksum-prefixed name. Prefer the original label.
-    detect_name(original_name, known, found);
+    // Managed files may use a checksum-prefixed on-disk name.
+    matcher.detect(original_name, found);
+    if canceled(cancel) || matcher.complete(found) { return; }
     if !path.is_file() {
         warnings.push(format!("Archivo no disponible: {original_name}"));
         return;
     }
+
+    let size = match fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            warnings.push(format!("{original_name}: {error}"));
+            return;
+        }
+    };
     if path.extension().and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("unitypackage")) {
-        if let Err(error) = detect_unitypackage(path, known, found) {
+        if size > MAX_UNITY_BYTES
+            || budget.unity_bytes.saturating_add(size) > MAX_TOTAL_UNITY_BYTES {
+            warnings.push(format!("{original_name}: UnityPackage omitido por límite de lectura"));
+            return;
+        }
+        budget.unity_bytes += size;
+        if let Err(error) = detect_unitypackage(path, matcher, found, cancel) {
             warnings.push(format!("{original_name}: {error}"));
         }
         return;
     }
     if !import::supported(path) { return; }
 
-    // Unlike the inspector's 512-row UI preview, include every safe root name.
-    match package_inspect::list_archive_root_names(path) {
-        Ok(names) => for name in names { detect_name(&name, known, found); },
-        Err(error) => {
-            warnings.push(format!("{original_name}: {error}"));
-            return;
-        },
+    // This visits ALL safe root entry names, unlike the inspector's capped
+    // preview, and avoids allocating an extra list of thousands of paths.
+    if let Err(error) = package_inspect::visit_archive_root_names(path, |name| {
+        if canceled(cancel) || matcher.complete(found) { return false; }
+        matcher.detect(name, found);
+        !matcher.complete(found)
+    }) {
+        warnings.push(format!("{original_name}: {error}"));
+        return;
     }
+    if canceled(cancel) || matcher.complete(found) { return; }
 
-    // Reuse the safe nested-ZIP traversal and package metadata (also for 7z/RAR).
+    // The nested inspector can decompress ZIPs inside ZIP/7z/RAR. Limit the
+    // amount of outer archive data considered for *deep* inspections across
+    // the entire operation; root filenames above were still examined.
+    if size > MAX_DEEP_ARCHIVE_BYTES
+        || budget.deep_archive_bytes.saturating_add(size) > MAX_TOTAL_DEEP_ARCHIVE_BYTES {
+        warnings.push(format!("{original_name}: inspección profunda omitida por límite de lectura"));
+        return;
+    }
+    budget.deep_archive_bytes += size;
     let preview = match package_inspect::inspect_any_archive(path) {
         Ok(preview) => preview,
         Err(error) => {
@@ -80,55 +171,63 @@ fn scan_file(path: &Path, original_name: &str, known: &[String],
             return;
         },
     };
-    for entry in &preview.root_files { detect_name(&entry.name, known, found); }
+    // All outer names are already visited; handle the nested ZIP hierarchy.
     for nested in &preview.inner_archives {
-        for part in &nested.chain { detect_name(&part.name, known, found); }
-        for entry in &nested.files { detect_name(&entry.name, known, found); }
+        if canceled(cancel) || matcher.complete(found) { break; }
+        for part in &nested.chain { matcher.detect(&part.name, found); }
+        for entry in &nested.files { matcher.detect(&entry.name, found); }
         if nested.hidden_files > 0 || nested.skipped_reason.is_some() {
             warnings.push(format!("{original_name}: inspección parcial de ZIP interno"));
         }
     }
-    if preview.root_hidden_files > 0 && preview.nested_entries > 0 {
-        warnings.push(format!("{original_name}: parte del contenido anidado está oculta"));
-    }
     if preview.nested_skipped > 0 || preview.hidden_archives > 0 {
         warnings.push(format!("{original_name}: algunos ZIP internos se omitieron"));
     }
+    if canceled(cancel) || matcher.complete(found) { return; }
 
-    // An explicitly requested scan may read bounded Unity metadata inside an
-    // archive. Extracted packages live only in this scan's temporary directory.
-    let mut bytes = 0u64;
-    let mut skipped = 0usize;
+    // Bounded temporary extraction for nested Unity packages only. Budget
+    // applies globally (a set of 256 attachments must not use 256*512 MiB).
+    let mut skipped_packages = 0usize;
     for (index, package) in preview.packages.iter().enumerate() {
-        detect_name(&package.name, known, found);
+        if canceled(cancel) || matcher.complete(found) { break; }
+        matcher.detect(&package.name, found);
+        if matcher.complete(found) { break; }
         if index >= MAX_PACKAGES_PER_ARCHIVE
-            || bytes.saturating_add(package.size) > MAX_PACKAGE_SCAN_BYTES {
-            skipped += 1;
+            || package.size > MAX_UNITY_BYTES
+            || budget.unity_bytes.saturating_add(package.size) > MAX_TOTAL_UNITY_BYTES {
+            skipped_packages += 1;
             continue;
         }
-        bytes += package.size;
+        budget.unity_bytes += package.size;
         match package_inspect::extract_unitypackage_nested(path, package, scratch) {
-            Ok(extracted) => {
-                if let Err(error) = detect_unitypackage(&extracted, known, found) {
-                    warnings.push(format!("{}: {error}", package.name));
-                }
+            Ok(extracted) => if let Err(error) = detect_unitypackage(&extracted, matcher, found, cancel) {
+                warnings.push(format!("{}: {error}", package.name));
             },
             Err(error) => warnings.push(format!("{}: {error}", package.name)),
         }
     }
     if preview.total_packages > preview.packages.len() {
-        skipped += preview.total_packages - preview.packages.len();
+        skipped_packages += preview.total_packages - preview.packages.len();
     }
-    if skipped > 0 {
-        warnings.push(format!("{original_name}: {skipped} UnityPackages omitidos por límites de análisis"));
+    if skipped_packages > 0 && !canceled(cancel) {
+        warnings.push(format!(
+            "{original_name}: {skipped_packages} UnityPackages omitidos por límites de análisis"
+        ));
     }
 }
 
-/// Scan only local files, directories and bounded archive metadata. Per-file
-/// failures are reported but do not prevent results from other attachments.
+/// Public convenience wrapper for non-interactive use and unit tests.
 pub fn scan(sources: &[(PathBuf, String)], known: &[String]) -> ScanResult {
+    scan_with_cancel(sources, known, &AtomicBool::new(false))
+}
+
+/// Analyze on a background worker, with bounded work and cooperative cancel.
+pub fn scan_with_cancel(
+    sources: &[(PathBuf, String)], known: &[String], cancel: &AtomicBool,
+) -> ScanResult {
     let mut result = ScanResult::default();
-    if known.is_empty() { return result; }
+    let matcher = Matcher::new(known);
+    if matcher.names.is_empty() || canceled(cancel) { return result; }
     let scratch = match tempfile::tempdir() {
         Ok(scratch) => scratch,
         Err(error) => {
@@ -136,16 +235,27 @@ pub fn scan(sources: &[(PathBuf, String)], known: &[String]) -> ScanResult {
             return result;
         }
     };
+    let mut budget = Budget::default();
     let mut found = HashSet::new();
-    for (source, name) in sources {
+    let mut limit_reached = false;
+    for (source, original) in sources {
+        if canceled(cancel) || matcher.complete(&found) { break; }
+        if result.scanned_files >= MAX_FILES { limit_reached = true; break; }
         if source.is_dir() {
-            for entry in walkdir::WalkDir::new(source).follow_links(false).into_iter() {
-                if result.scanned_files >= MAX_FILES { break; }
+            let mut walked = 0usize;
+            for entry in walkdir::WalkDir::new(source)
+                .follow_links(false).max_depth(MAX_WALK_DEPTH).into_iter() {
+                if canceled(cancel) || matcher.complete(&found) { break; }
+                walked += 1;
+                if walked > MAX_WALK_ENTRIES || result.scanned_files >= MAX_FILES {
+                    limit_reached = true;
+                    break;
+                }
                 match entry {
                     Ok(item) if item.file_type().is_file() && import::supported(item.path()) => {
                         let filename = item.file_name().to_string_lossy();
-                        scan_file(item.path(), &filename, known, &mut found,
-                            &mut result.warnings, scratch.path());
+                        scan_file(item.path(), &filename, &matcher, &mut found,
+                            &mut result.warnings, scratch.path(), &mut budget, cancel);
                         result.scanned_files += 1;
                     },
                     Err(error) => result.warnings.push(format!("Carpeta: {error}")),
@@ -153,32 +263,39 @@ pub fn scan(sources: &[(PathBuf, String)], known: &[String]) -> ScanResult {
                 }
             }
         } else {
-            if result.scanned_files >= MAX_FILES { break; }
-            scan_file(source, name, known, &mut found, &mut result.warnings, scratch.path());
+            scan_file(source, original, &matcher, &mut found,
+                &mut result.warnings, scratch.path(), &mut budget, cancel);
             result.scanned_files += 1;
         }
     }
-    if result.scanned_files >= MAX_FILES && sources.len() >= MAX_FILES {
-        result.warnings.push("Límite de 256 archivos examinados".into());
+    if limit_reached && !canceled(cancel) {
+        result.warnings.push("Límite de archivos o entradas de carpeta alcanzado".into());
     }
-    result.matches = known.iter().filter(|name| found.contains(*name)).cloned().collect();
-    // Keep the UI status small and avoid repeating the same warning.
+    result.matches = matcher.names.into_iter().filter(|name| found.contains(name)).collect();
     result.warnings.sort();
     result.warnings.dedup();
     result
 }
 
-/// Preserve text already typed in the field. Only append absent labels.
-/// Persisting/uppercasing is still handled by Catalog::set_avatars on Save.
+/// Number of slots left before the catalog's 64-avatar limit per product.
+pub fn remaining_slots(current: &str) -> usize {
+    let unique: HashSet<String> = current.split([',','\n',';'])
+        .map(|name| name.trim().to_uppercase())
+        .filter(|name| !name.is_empty()).collect();
+    64usize.saturating_sub(unique.len())
+}
+
+/// Preserve all typed values and their formatting, append only absent names,
+/// and respect the existing 64-avatar limit in Catalog::set_avatars.
 pub fn merge_avatars(current: &str, detected: &[String]) -> (String, Vec<String>) {
     let mut seen: HashSet<String> = current.split([',', '\n', ';'])
-        .map(|text| text.trim().to_uppercase())
-        .filter(|text| !text.is_empty())
-        .collect();
+        .map(|name| name.trim().to_uppercase())
+        .filter(|name| !name.is_empty()).collect();
     let mut added = Vec::new();
     for avatar in detected {
         let label = avatar.trim().to_uppercase();
-        if !label.is_empty() && seen.insert(label.clone()) {
+        if !label.is_empty() && !seen.contains(&label) && seen.len() < 64 {
+            seen.insert(label.clone());
             added.push(label);
         }
     }
@@ -251,4 +368,54 @@ mod tests {
         assert_eq!(report.matches, vec!["MANUKA"]);
         assert!(report.warnings.is_empty());
     }
+    #[test]
+    fn scans_all_root_entries_after_the_preview_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("other.zip");
+        let mut writer = zip::ZipWriter::new(File::create(&path).unwrap());
+        for index in 0..600 {
+            writer.start_file(format!("ordinary/file_{index}.txt"),
+                zip::write::FileOptions::default()).unwrap();
+            writer.write_all(b"content").unwrap();
+        }
+        writer.start_file("outfits/MANUKA_XXXX.prefab",
+            zip::write::FileOptions::default()).unwrap();
+        writer.write_all(b"content").unwrap();
+        writer.finish().unwrap();
+        let report = scan(&[(path, "other.zip".into())], &["MANUKA".into()]);
+        assert_eq!(report.matches, vec!["MANUKA"]);
+    }
+
+    #[test]
+    fn respects_existing_avatar_cap_and_preserves_original_text() {
+        let current = (0..64).map(|i| format!("AVATAR{i}"))
+            .collect::<Vec<_>>().join(", ");
+        let (merged, added) = merge_avatars(&current, &["MANUKA".into()]);
+        assert_eq!(merged, current);
+        assert!(added.is_empty());
+        assert_eq!(remaining_slots(&current), 0);
+    }
+
+    #[test]
+    fn cancelled_scan_does_no_file_work() {
+        let cancel = AtomicBool::new(true);
+        let report = scan_with_cancel(
+            &[(PathBuf::from("missing.zip"), "MANUKA.zip".into())],
+            &["MANUKA".into()], &cancel,
+        );
+        assert_eq!(report.scanned_files, 0);
+        assert!(report.matches.is_empty());
+    }
+
+    #[test]
+    fn many_candidates_and_compound_names_match_without_substrings() {
+        let known:Vec<String> = (0..1500).map(|i| format!("AV{i}")).collect();
+        let matcher = Matcher::new(&known);
+        let mut found = HashSet::new();
+        matcher.detect("Assets/Outfits/AV1499_test.prefab", &mut found);
+        assert!(found.contains("AV1499"));
+        assert!(!found.contains("AV149"));
+        assert!(!matcher.complete(&found));
+    }
+
 }
