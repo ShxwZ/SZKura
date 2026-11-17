@@ -188,6 +188,12 @@ pub fn translate(language:Language,s:&str)->&str {
         "Nombre de tienda"=>"Shop name",
         "Avatares compatibles"=>"Compatible avatars",
         "Analizar archivos"=>"Scan files",
+        "Cancelar análisis"=>"Cancel scan",
+        "Análisis cancelado."=>"Scan canceled.",
+        "Han cambiado los archivos; vuelve a analizarlos."=>"The attached files changed; scan again.",
+        "Límite de 64 avatares por ficha"=>"Limit of 64 avatars per product",
+        "Error al leer avatares"=>"Could not read avatars",
+        "Error al leer archivos"=>"Could not read files",
         "Busca avatares conocidos en nombres y rutas de archivos."=>"Find known avatars in file names and paths.",
         "Analizando archivos..."=>"Scanning files...",
         "No hay archivos para analizar."=>"No files to scan.",
@@ -544,6 +550,24 @@ mod tests{
             "Could not open link: This link requires a valid SZKura transfer key"
         );
     }
+    #[test]
+    fn avatar_scan_controls_are_translated_in_both_languages() {
+        for (es,en) in [
+            ("Analizar archivos","Scan files"),
+            ("Cancelar análisis","Cancel scan"),
+            ("Analizando archivos...","Scanning files..."),
+            ("Análisis cancelado.","Scan canceled."),
+            ("Avatares añadidos","Avatars added"),
+            ("Advertencias de análisis","Scan warnings"),
+            ("No hay archivos para analizar.","No files to scan."),
+            ("Han cambiado los archivos; vuelve a analizarlos.","The attached files changed; scan again."),
+            ("Límite de 64 avatares por ficha","Limit of 64 avatars per product"),
+        ] {
+            assert_eq!(translate(Language::Spanish,es),es);
+            assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
     #[test]
     fn unity_package_path_preview_is_translated() {
         for (es, en) in [
