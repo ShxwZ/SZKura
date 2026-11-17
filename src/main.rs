@@ -2456,7 +2456,7 @@ mod responsive_editor_tests {
                             let mut expanded=false;
                             product_fields(ui,&mut url,&mut title,&mut creator,
                                 &mut category,&mut tags,&mut avatars,&mut nsfw,
-                                &mut description,&mut expanded,"test-responsive-category");
+                                &mut description,&mut expanded,"test-responsive-category",false);
                             max_width=ui.min_rect().width();
                         });
                 });
