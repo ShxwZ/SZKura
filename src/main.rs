@@ -31,6 +31,7 @@ use szkura::{
     package_inspect::{self, ZipPreview, UnityPackage},
     unitypackage_inspect::{self, UnityPathsPreview},
     unitypackage_labels,
+    avatar_detection,
 };
 
 // All surface, foreground and accent colors come from the selected palette.
@@ -56,6 +57,13 @@ enum CatalogView { Grid, List }
 
 struct JobResult { message:String, select_id:Option<i64> }
 struct JobFinished { message:String, select_id:Option<i64>, ok:bool }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AvatarScanTarget { New, Edit(i64) }
+struct AvatarScanFinished {
+    target: AvatarScanTarget,
+    report: avatar_detection::ScanResult,
+}
 
 /// One LRU entry owns its foreground and optional 64px background textures.
 /// Their combined bytes count toward the existing 48 MiB texture budget.
@@ -117,6 +125,7 @@ struct BoothApp {
     inspected_zip:Option<String>,
     archive_preview:Option<ZipPreview>,
     archive_scan:Option<Receiver<Result<(ZipPreview,package_inspect::CacheUse),String>>>,
+    avatar_scan:Option<Receiver<AvatarScanFinished>>,
     unity_paths_key:Option<String>,
     unity_paths_label:String,
     unity_paths_scan:Option<Receiver<Result<UnityPathsPreview,String>>>,
@@ -201,7 +210,7 @@ impl BoothApp {
             pending_quick_delete:None,
             status:"Biblioteca lista. Cada producto puede tener varios archivos vinculados.".into(),
             receiver:None,inspected_zip:None,archive_preview:None,
-            archive_scan:None,confirm_clear_cache:false,
+            archive_scan:None,avatar_scan:None,confirm_clear_cache:false,
             unity_paths_key:None,unity_paths_label:String::new(),
             unity_paths_scan:None,unity_paths_preview:None,unity_paths_error:None,
             textures:HashMap::new(),texture_keys:VecDeque::new(),
@@ -257,6 +266,75 @@ impl BoothApp {
             Err(e)=>self.status=format!("Error de lectura: {e}"),
         }
     }
+    /// Explicit, asynchronous scan: never commits edits to SQLite.
+    fn start_avatar_scan(&mut self,target:AvatarScanTarget) {
+        if self.avatar_scan.is_some(){return;}
+        let known=match self.db.avatar_options(){
+            Ok(names)=>names,
+            Err(error)=>{
+                self.status=format!("Error leyendo avatares: {error}");
+                return;
+            }
+        };
+        if known.is_empty(){
+            self.status=tr("Primero añade algún avatar compatible a tu biblioteca.").into();
+            return;
+        }
+        let sources:Vec<(PathBuf,String)>=match target {
+            AvatarScanTarget::New=>self.new_files.iter().map(|path|{
+                let name=path.file_name().map(|n|n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                (path.clone(),name)
+            }).collect(),
+            AvatarScanTarget::Edit(id)=>match self.db.attachments_for(id){
+                Ok(files)=>files.into_iter().map(|attachment|
+                    (PathBuf::from(attachment.stored_path),attachment.original_name)).collect(),
+                Err(error)=>{
+                    self.status=format!("Error leyendo archivos: {error}");
+                    return;
+                }
+            },
+        };
+        if sources.is_empty(){
+            self.status=tr("No hay archivos para analizar.").into();
+            return;
+        }
+        let (sender,receiver)=mpsc::channel();
+        self.avatar_scan=Some(receiver);
+        self.status=tr("Analizando archivos...").into();
+        std::thread::spawn(move||{
+            let report=avatar_detection::scan(&sources,&known);
+            let _=sender.send(AvatarScanFinished{target,report});
+        });
+    }
+
+    fn poll_avatar_scan(&mut self,ctx:&egui::Context) {
+        if let Some(finished)=self.avatar_scan.as_ref().and_then(|rx|rx.try_recv().ok()){
+            self.avatar_scan=None;
+            let field=match finished.target {
+                AvatarScanTarget::New if self.new_dialog=>Some(&mut self.new_avatars),
+                AvatarScanTarget::Edit(id) if self.selected==Some(id) && !self.new_dialog=>
+                    Some(&mut self.edit_avatars),
+                _=>None,
+            };
+            if let Some(field)=field {
+                let (merged,added)=avatar_detection::merge_avatars(field,&finished.report.matches);
+                *field=merged;
+                self.status=if added.is_empty(){
+                    tr("No se encontraron nuevos avatares compatibles.").to_owned()
+                }else{
+                    format!("{}: {}",tr("Avatares añadidos"),added.join(", "))
+                };
+                if !finished.report.warnings.is_empty() {
+                    let warning_count=finished.report.warnings.len();
+                    self.status.push_str(&format!(" | {}: {warning_count}",
+                        tr("Advertencias de análisis")));
+                }
+            }
+        }
+        if self.avatar_scan.is_some(){ctx.request_repaint_after(Duration::from_millis(100));}
+    }
+
     fn launch<F>(&mut self, operation:F)
     where F:FnOnce(AppPaths)->Result<JobResult>+Send+'static {
         if self.receiver.is_some() || self.update_install_rx.is_some() {return;}
@@ -1024,11 +1102,13 @@ impl BoothApp {
     fn detail_fields_section(&mut self,ui:&mut egui::Ui) {
         ui.label(RichText::new(tr("INFORMACIÓN")).color(colors().accent).strong().size(12.0));
         ui.add_space(6.0);
-        product_fields(ui,
+        let scan=product_fields(ui,
             &mut self.edit_booth,&mut self.edit_title,&mut self.edit_creator,
             &mut self.edit_category,&mut self.edit_tags,&mut self.edit_avatars,
             &mut self.edit_nsfw,&mut self.edit_description,
-            &mut self.edit_description_expanded,"product-edit-category");
+            &mut self.edit_description_expanded,"product-edit-category",
+            self.avatar_scan.is_some());
+        if scan {self.start_avatar_scan(AvatarScanTarget::Edit(self.selected.unwrap()));}
     }
 
     fn new_cover_section(&mut self,ui:&mut egui::Ui,ctx:&egui::Context)->bool{
@@ -1047,11 +1127,13 @@ impl BoothApp {
     fn new_fields_section(&mut self,ui:&mut egui::Ui){
         ui.label(RichText::new(tr("INFORMACIÓN")).color(colors().accent).strong().size(12.0));
         ui.add_space(6.0);
-        product_fields(ui,
+        let scan=product_fields(ui,
             &mut self.new_url,&mut self.new_title,&mut self.new_creator,
             &mut self.new_category,&mut self.new_tags,&mut self.new_avatars,
             &mut self.new_nsfw,&mut self.new_description,
-            &mut self.new_description_expanded,"product-new-category");
+            &mut self.new_description_expanded,"product-new-category",
+            self.avatar_scan.is_some());
+        if scan {self.start_avatar_scan(AvatarScanTarget::New);}
     }
 
     fn detail(&mut self,ctx:&egui::Context) {
@@ -2225,6 +2307,7 @@ impl eframe::App for BoothApp {
             }
         }
         self.poll_archive_scan();
+        self.poll_avatar_scan(ctx);
         self.poll_unity_paths(ctx);
         self.poll_cover_results(ctx);
         if self.favorites_dirty {
@@ -2881,7 +2964,8 @@ fn product_fields(
     creator:&mut String,category:&mut String,tags:&mut String,
     avatars:&mut String,nsfw:&mut bool,
     description:&mut String,expanded:&mut bool,field_id:&str,
-){
+    scan_busy:bool,
+)->bool {
     ui.spacing_mut().item_spacing.y=12.0;
     ui.spacing_mut().interact_size.y=36.0;
     form_text(ui,"Enlace de BOOTH",url,"https://chocolaterice.booth.pm/items/123456");
@@ -2895,7 +2979,24 @@ fn product_fields(
         form_text(ui,"Creador / tienda",creator,"Nombre de tienda");
         category_field(ui,category,field_id);
     }
-    form_text(ui,"Avatares compatibles",avatars,"SHINANO, MAYA, MANUKA...");
+    let mut scan_clicked=false;
+    ui.vertical(|ui|{
+        ui.spacing_mut().item_spacing.y=5.0;
+        ui.label(RichText::new(tr("Avatares compatibles")).color(colors().muted).size(13.0));
+        ui.horizontal(|ui|{
+            let button_space=154.0;
+            let input_width=(ui.available_width()-button_space-8.0).max(70.0);
+            ui.add_sized([input_width,36.0],
+                egui::TextEdit::singleline(avatars)
+                    .vertical_align(egui::Align::Center)
+                    .hint_text("SHINANO, MAYA, MANUKA..."));
+            scan_clicked=ui.add_enabled(!scan_busy,
+                egui::Button::new(tr("Analizar archivos"))
+                    .min_size(egui::vec2(145.0,36.0)))
+                .on_hover_text(tr("Busca avatares conocidos en nombres y rutas de archivos."))
+                .clicked();
+        });
+    });
     ui.label(RichText::new(tr("Se guardan en MAYÚSCULAS y sin nombres repetidos. Sepáralos con comas."))
         .color(colors().muted).size(12.0));
     form_text(ui,"Otras etiquetas",tags,"Color, estilo, temática...");
@@ -2938,6 +3039,7 @@ fn product_fields(
                     .color(colors().muted).size(13.0)).wrap());
             });
     }
+    scan_clicked
 }
 fn cache_local_cover(covers:&Path,source:&Path)->Result<String> {
     let bytes=std::fs::read(source).context("No se pudo leer la portada")?;
