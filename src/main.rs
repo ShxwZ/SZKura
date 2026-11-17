@@ -1793,8 +1793,8 @@ impl BoothApp {
                     return;
                 }
                 let space=ui.available_width().max(210.0);
-                let columns=((space/325.0).floor() as usize).clamp(1,4);
                 let gap=ui.spacing().item_spacing.x;
+                let columns=grid_column_count(space,gap);
                 let width=((space-gap*(columns-1) as f32)/columns as f32).max(200.0);
                 let rows=self.assets.len().div_ceil(columns);
                 // Virtual rows: only cards within the viewport decode cover textures.
@@ -2957,6 +2957,26 @@ fn category_field(ui:&mut egui::Ui,category:&mut String,field_id:&str){
                 }
             });
     });
+}
+
+/// Fill available catalog width with cards at least 325pt wide (apart from
+/// narrow one-column layouts). Account for egui's gaps between cards.
+fn grid_column_count(available_width:f32,gap:f32)->usize {
+    (((available_width+gap)/(325.0+gap)).floor() as usize).max(1)
+}
+
+#[cfg(test)]
+mod grid_column_tests {
+    use super::grid_column_count;
+
+    #[test]
+    fn adds_columns_when_the_viewport_grows() {
+        assert_eq!(grid_column_count(280.0,8.0),1);
+        assert_eq!(grid_column_count(720.0,8.0),2);
+        assert_eq!(grid_column_count(1430.0,8.0),4);
+        assert_eq!(grid_column_count(1850.0,8.0),5);
+        assert_eq!(grid_column_count(2500.0,8.0),7);
+    }
 }
 
 fn product_fields(
