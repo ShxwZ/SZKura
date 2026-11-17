@@ -17,7 +17,7 @@ use eframe::egui::{self, Color32, RichText, TextureHandle};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
-    sync::{mpsc::{self, Receiver, Sender},Arc,atomic::{AtomicU64,Ordering}},
+    sync::{mpsc::{self, Receiver, Sender},Arc,atomic::{AtomicBool,AtomicU64,Ordering}},
     time::Duration,
 };
 use szkura::{
@@ -62,6 +62,8 @@ struct JobFinished { message:String, select_id:Option<i64>, ok:bool }
 enum AvatarScanTarget { New, Edit(i64) }
 struct AvatarScanFinished {
     target: AvatarScanTarget,
+    generation: u64,
+    source_paths: Vec<PathBuf>,
     report: avatar_detection::ScanResult,
 }
 
@@ -126,6 +128,8 @@ struct BoothApp {
     archive_preview:Option<ZipPreview>,
     archive_scan:Option<Receiver<Result<(ZipPreview,package_inspect::CacheUse),String>>>,
     avatar_scan:Option<Receiver<AvatarScanFinished>>,
+    avatar_scan_cancel:Option<Arc<AtomicBool>>,
+    avatar_scan_generation:u64,
     unity_paths_key:Option<String>,
     unity_paths_label:String,
     unity_paths_scan:Option<Receiver<Result<UnityPathsPreview,String>>>,
@@ -210,7 +214,9 @@ impl BoothApp {
             pending_quick_delete:None,
             status:"Biblioteca lista. Cada producto puede tener varios archivos vinculados.".into(),
             receiver:None,inspected_zip:None,archive_preview:None,
-            archive_scan:None,avatar_scan:None,confirm_clear_cache:false,
+            archive_scan:None,avatar_scan:None,
+            avatar_scan_cancel:None,avatar_scan_generation:0,
+            confirm_clear_cache:false,
             unity_paths_key:None,unity_paths_label:String::new(),
             unity_paths_scan:None,unity_paths_preview:None,unity_paths_error:None,
             textures:HashMap::new(),texture_keys:VecDeque::new(),
@@ -251,6 +257,7 @@ impl BoothApp {
     }
 
     fn select_id(&mut self,id:i64) {
+        self.cancel_avatar_scan();
         match self.db.get(id) {
             Ok(Some(a))=>{
                 self.selected=Some(id);self.edit_title=a.title;self.edit_category=a.category;
@@ -266,13 +273,23 @@ impl BoothApp {
             Err(e)=>self.status=format!("Error de lectura: {e}"),
         }
     }
+    /// Discard stale results and ask the background worker to stop at its next
+    /// safe interruption point. Navigation never waits on decompression.
+    fn cancel_avatar_scan(&mut self) {
+        if let Some(cancel)=self.avatar_scan_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.avatar_scan=None;
+        self.avatar_scan_generation=self.avatar_scan_generation.wrapping_add(1);
+    }
+
     /// Explicit, asynchronous scan: never commits edits to SQLite.
     fn start_avatar_scan(&mut self,target:AvatarScanTarget) {
         if self.avatar_scan.is_some(){return;}
-        let known=match self.db.avatar_options(){
+        let known=match self.db.avatar_names_for_scan(){
             Ok(names)=>names,
             Err(error)=>{
-                self.status=format!("Error leyendo avatares: {error}");
+                self.status=format!("{}: {error}",tr("Error al leer avatares"));
                 return;
             }
         };
@@ -290,7 +307,7 @@ impl BoothApp {
                 Ok(files)=>files.into_iter().map(|attachment|
                     (PathBuf::from(attachment.stored_path),attachment.original_name)).collect(),
                 Err(error)=>{
-                    self.status=format!("Error leyendo archivos: {error}");
+                    self.status=format!("{}: {error}",tr("Error al leer archivos"));
                     return;
                 }
             },
@@ -299,18 +316,39 @@ impl BoothApp {
             self.status=tr("No hay archivos para analizar.").into();
             return;
         }
+        let source_paths=sources.iter().map(|(path,_)|path.clone()).collect();
+        let generation=self.avatar_scan_generation;
+        let cancel=Arc::new(AtomicBool::new(false));
+        let cancel_for_worker=Arc::clone(&cancel);
         let (sender,receiver)=mpsc::channel();
+        self.avatar_scan_cancel=Some(cancel);
         self.avatar_scan=Some(receiver);
         self.status=tr("Analizando archivos...").into();
         std::thread::spawn(move||{
-            let report=avatar_detection::scan(&sources,&known);
-            let _=sender.send(AvatarScanFinished{target,report});
+            let report=avatar_detection::scan_with_cancel(&sources,&known,&cancel_for_worker);
+            let _=sender.send(AvatarScanFinished{
+                target,generation,source_paths,report,
+            });
         });
     }
 
     fn poll_avatar_scan(&mut self,ctx:&egui::Context) {
         if let Some(finished)=self.avatar_scan.as_ref().and_then(|rx|rx.try_recv().ok()){
             self.avatar_scan=None;
+            self.avatar_scan_cancel=None;
+            if finished.generation!=self.avatar_scan_generation { return; }
+            let unchanged_sources=match finished.target {
+                AvatarScanTarget::New=>self.new_files==finished.source_paths,
+                AvatarScanTarget::Edit(id)=>self.db.attachments_for(id)
+                    .map(|files| files.into_iter()
+                        .map(|file| PathBuf::from(file.stored_path))
+                        .collect::<Vec<_>>()==finished.source_paths)
+                    .unwrap_or(false),
+            };
+            if !unchanged_sources {
+                self.status=tr("Han cambiado los archivos; vuelve a analizarlos.").into();
+                return;
+            }
             let field=match finished.target {
                 AvatarScanTarget::New if self.new_dialog=>Some(&mut self.new_avatars),
                 AvatarScanTarget::Edit(id) if self.selected==Some(id) && !self.new_dialog=>
@@ -318,6 +356,7 @@ impl BoothApp {
                 _=>None,
             };
             if let Some(field)=field {
+                let original_slots=avatar_detection::remaining_slots(field);
                 let (merged,added)=avatar_detection::merge_avatars(field,&finished.report.matches);
                 *field=merged;
                 self.status=if added.is_empty(){
@@ -325,6 +364,12 @@ impl BoothApp {
                 }else{
                     format!("{}: {}",tr("Avatares añadidos"),added.join(", "))
                 };
+                // The catalog rejects more than 64 compatible avatars.
+                if added.len()==original_slots && original_slots>0
+                    && finished.report.matches.len()>added.len() {
+                    self.status.push_str(&format!(" | {}",
+                        tr("Límite de 64 avatares por ficha")));
+                }
                 if !finished.report.warnings.is_empty() {
                     let warning_count=finished.report.warnings.len();
                     self.status.push_str(&format!(" | {}: {warning_count}",
@@ -724,6 +769,7 @@ impl BoothApp {
         });
     }
     fn start_new(&mut self) {
+        self.cancel_avatar_scan();
         if !self.configured {self.show_settings=true;return;}
         self.selected=None;
         self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
@@ -1108,7 +1154,14 @@ impl BoothApp {
             &mut self.edit_nsfw,&mut self.edit_description,
             &mut self.edit_description_expanded,"product-edit-category",
             self.avatar_scan.is_some());
-        if scan {self.start_avatar_scan(AvatarScanTarget::Edit(self.selected.unwrap()));}
+        if scan {
+            if self.avatar_scan.is_some() {
+                self.cancel_avatar_scan();
+                self.status=tr("Análisis cancelado.").into();
+            } else if let Some(id)=self.selected {
+                self.start_avatar_scan(AvatarScanTarget::Edit(id));
+            }
+        }
     }
 
     fn new_cover_section(&mut self,ui:&mut egui::Ui,ctx:&egui::Context)->bool{
@@ -1133,7 +1186,14 @@ impl BoothApp {
             &mut self.new_nsfw,&mut self.new_description,
             &mut self.new_description_expanded,"product-new-category",
             self.avatar_scan.is_some());
-        if scan {self.start_avatar_scan(AvatarScanTarget::New);}
+        if scan {
+            if self.avatar_scan.is_some() {
+                self.cancel_avatar_scan();
+                self.status=tr("Análisis cancelado.").into();
+            } else {
+                self.start_avatar_scan(AvatarScanTarget::New);
+            }
+        }
     }
 
     fn detail(&mut self,ctx:&egui::Context) {
@@ -1430,7 +1490,7 @@ impl BoothApp {
                         }
                     });
             });
-        if back{self.selected=None;return;}
+        if back{self.cancel_avatar_scan();self.selected=None;return;}
         if let Some(path)=inspect_zip{self.inspect_archive(path,false);}
         if let Some(path)=force_reinspect{self.inspect_archive(path,true);}
         if let Some(path)=open_direct{
@@ -1493,6 +1553,7 @@ impl BoothApp {
             }
         }
         if save {
+            self.cancel_avatar_scan();
             let candidate=self.edit_booth.trim().to_owned();
             let validated=if candidate.is_empty(){Ok(String::new())}
                 else{booth::canonical_url(&candidate)};
@@ -2281,6 +2342,7 @@ impl BoothApp {
                     });
             });
         if back{
+            self.cancel_avatar_scan();
             self.new_dialog=false;self.new_files.clear();
             return;
         }
@@ -2290,7 +2352,7 @@ impl BoothApp {
                 self.new_cover=Some(file);
             }
         }
-        if submit{self.add_product();}
+        if submit{self.cancel_avatar_scan();self.add_product();}
     }
 
 }
@@ -3010,9 +3072,12 @@ fn product_fields(
                 egui::TextEdit::singleline(avatars)
                     .vertical_align(egui::Align::Center)
                     .hint_text("SHINANO, MAYA, MANUKA..."));
-            scan_clicked=ui.add_enabled(!scan_busy,
-                egui::Button::new(tr("Analizar archivos"))
-                    .min_size(egui::vec2(145.0,36.0)))
+            scan_clicked=ui.add(
+                egui::Button::new(tr(if scan_busy {
+                    "Cancelar análisis"
+                } else {
+                    "Analizar archivos"
+                })).min_size(egui::vec2(145.0,36.0)))
                 .on_hover_text(tr("Busca avatares conocidos en nombres y rutas de archivos."))
                 .clicked();
         });
