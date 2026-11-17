@@ -238,18 +238,19 @@ pub fn scan_with_cancel(
     let mut budget = Budget::default();
     let mut found = HashSet::new();
     let mut limit_reached = false;
-    for (source, original) in sources {
+    let mut visited_directory_entries = 0usize;
+    'sources: for (source, original) in sources {
         if canceled(cancel) || matcher.complete(&found) { break; }
         if result.scanned_files >= MAX_FILES { limit_reached = true; break; }
         if source.is_dir() {
-            let mut walked = 0usize;
             for entry in walkdir::WalkDir::new(source)
                 .follow_links(false).max_depth(MAX_WALK_DEPTH).into_iter() {
                 if canceled(cancel) || matcher.complete(&found) { break; }
-                walked += 1;
-                if walked > MAX_WALK_ENTRIES || result.scanned_files >= MAX_FILES {
+                visited_directory_entries += 1;
+                if visited_directory_entries > MAX_WALK_ENTRIES
+                    || result.scanned_files >= MAX_FILES {
                     limit_reached = true;
-                    break;
+                    break 'sources;
                 }
                 match entry {
                     Ok(item) if item.file_type().is_file() && import::supported(item.path()) => {

@@ -286,7 +286,7 @@ impl BoothApp {
     /// Explicit, asynchronous scan: never commits edits to SQLite.
     fn start_avatar_scan(&mut self,target:AvatarScanTarget) {
         if self.avatar_scan.is_some(){return;}
-        let known=match self.db.avatar_names_for_scan(){
+        let mut known=match self.db.avatar_names_for_scan(){
             Ok(names)=>names,
             Err(error)=>{
                 self.status=format!("{}: {error}",tr("Error al leer avatares"));
@@ -295,6 +295,22 @@ impl BoothApp {
         };
         if known.is_empty(){
             self.status=tr("Primero añade algún avatar compatible a tu biblioteca.").into();
+            return;
+        }
+        let current=match target {
+            AvatarScanTarget::New=>&self.new_avatars,
+            AvatarScanTarget::Edit(_)=>&self.edit_avatars,
+        };
+        if avatar_detection::remaining_slots(current)==0 {
+            self.status=tr("Límite de 64 avatares por ficha").into();
+            return;
+        }
+        let existing:HashSet<String>=current.split([',','\n',';'])
+            .map(|name|name.trim().to_uppercase())
+            .filter(|name|!name.is_empty()).collect();
+        known.retain(|name|!existing.contains(name));
+        if known.is_empty(){
+            self.status=tr("No se encontraron nuevos avatares compatibles.").into();
             return;
         }
         let sources:Vec<(PathBuf,String)>=match target {
