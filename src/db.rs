@@ -536,6 +536,20 @@ impl Catalog {
         Ok(normalized)
     }
 
+    /// All known labels for on-demand file analysis. The filter's separate
+    /// 512-label UI cap must not hide valid compatibility candidates.
+    pub fn avatar_names_for_scan(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT avatar_name FROM asset_avatars ORDER BY avatar_name COLLATE NOCASE"
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_,String>(0))?;
+        let mut names:Vec<String> = rows.collect::<rusqlite::Result<Vec<String>>>()?
+            .into_iter().flat_map(|name| Self::normalize_avatar_names(&name)).collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
     /// Existing names populate the filter; no hard-coded avatar list.
     pub fn avatar_options(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(

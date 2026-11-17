@@ -720,32 +720,39 @@ fn valid_cached_json(data:&str)->Option<ZipPreview>{
 ///
 /// The linked attachment checksum is NOT assumed current: users may replace a
 /// referenced ZIP after linking it. Never trust it without revalidation.
-/// Scan all safe root entry names, including entries hidden by the UI's
-/// bounded preview. Nested archive inspection remains separately bounded.
-pub fn list_archive_root_names(path: &Path) -> Result<Vec<String>> {
+/// Visit all safe root entry names, including entries hidden by the UI's
+/// bounded preview. Returning false stops early, without allocating a list
+/// of thousands of filenames. Nested archive inspection remains bounded.
+pub fn visit_archive_root_names(path: &Path, mut visit: impl FnMut(&str) -> bool) -> Result<()> {
     if is_sevenzip(path) {
         let reader = sevenzip_reader(path)?;
         let entries = &reader.archive().files;
         if entries.len() > MAX_ZIP_ENTRIES { bail!("7z con demasiadas entradas"); }
-        Ok(entries.iter().filter(|e|
-            !e.is_directory && !e.is_anti_item && safe_member_name(&e.name))
-            .map(|e| e.name.clone()).collect())
+        for entry in entries {
+            if !entry.is_directory && !entry.is_anti_item
+                && safe_member_name(&entry.name) && !visit(&entry.name) {
+                break;
+            }
+        }
     } else if is_rar(path) {
         let archive = rar_reader(path)?;
-        let members: Vec<_> = archive.members().take(MAX_ZIP_ENTRIES + 1).collect();
-        if members.len() > MAX_ZIP_ENTRIES { bail!("RAR con demasiadas entradas"); }
-        Ok(members.into_iter().filter(|m| rar_ordinary_member(m))
-            .map(|m| m.meta.name_lossy().to_string()).collect())
+        // Enforce the cap without storing the full member list again.
+        for (index, entry) in archive.members().enumerate() {
+            if index >= MAX_ZIP_ENTRIES { bail!("RAR con demasiadas entradas"); }
+            if rar_ordinary_member(&entry) {
+                let name = entry.meta.name_lossy();
+                if !visit(&name) { break; }
+            }
+        }
     } else {
         let mut archive = ZipArchive::new(File::open(path)?)?;
         if archive.len() > MAX_ZIP_ENTRIES { bail!("ZIP con demasiadas entradas"); }
-        let mut names = Vec::new();
         for index in 0..archive.len() {
             let entry = archive.by_index(index)?;
-            if safe_regular_file(&entry) { names.push(entry.name().to_owned()); }
+            if safe_regular_file(&entry) && !visit(entry.name()) { break; }
         }
-        Ok(names)
     }
+    Ok(())
 }
 
 pub fn inspect_any_archive(path:&Path)->Result<ZipPreview> {
