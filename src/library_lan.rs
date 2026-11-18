@@ -406,6 +406,8 @@ pub fn start_library(db_path:&Path,selection:&ShareSelection,data_dir:&Path,
     let snapshot=Arc::new(snapshot);
     let files=snapshot.files.len();
     let visible=snapshot.assets.len();
+    let thread_key=key.clone();
+    let thread_prefix=prefix.clone();
     thread::spawn(move||{
         while !stop_thread.load(Ordering::Relaxed) {
             let request=match server.recv_timeout(Duration::from_millis(200)) {
@@ -421,8 +423,8 @@ pub fn start_library(db_path:&Path,selection:&ShareSelection,data_dir:&Path,
             let published=Arc::clone(&snapshot);
             let current=Arc::clone(&active);
             let stop=Arc::clone(&stop_thread);
-            let endpoint=prefix.clone();
-            let secret=key.clone();
+            let endpoint=thread_prefix.clone();
+            let secret=thread_key.clone();
             thread::spawn(move||{
                 handle_request(request,&published,&endpoint,&secret,stop);
                 current.fetch_sub(1,Ordering::SeqCst);
