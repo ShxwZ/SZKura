@@ -10,7 +10,7 @@ use reqwest::{blocking::Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
     io::{Read, Write},
     net::{IpAddr, Ipv4Addr, UdpSocket},
@@ -541,7 +541,7 @@ pub fn import_asset(conn:&RemoteConnection,id:u64,chosen:&BTreeSet<u64>,
         bail!("Metadatos remotos demasiado grandes");
     }
     if !asset.booth_url.is_empty(){booth::validate_booth_url(&asset.booth_url)?;}
-    let allowed:HashSet<u64>=asset.files.iter().map(|f|f.id).collect();
+    let allowed:BTreeSet<u64>=asset.files.iter().map(|f|f.id).collect();
     if !chosen.is_subset(&allowed) {bail!("Uno de los archivos no está publicado");}
     let total=asset.files.iter().filter(|f|chosen.contains(&f.id))
         .try_fold(0u64,|sum,f|sum.checked_add(f.size)).context("Tamaño inválido")?;
