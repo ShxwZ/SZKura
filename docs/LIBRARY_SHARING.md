@@ -1,54 +1,57 @@
-# Compartir biblioteca en LAN o por Cloudflare Tunnel (experimental)
+# Compartir biblioteca · revisión de catálogo y sincronización (experimental)
 
-Función opcional de la issue #6. Es independiente del sistema actual de enlace temporal «Compartir ficha» (SHARING.md).
+Función opcional de la [issue #6](https://github.com/ShxwZ/SZKura/issues/6). Se inicia **manualmente** desde la aplicación de escritorio y es independiente de «Compartir ficha» (véase [SHARING.md](SHARING.md)). La interfaz remota es nativa en SZKura: no se publica una web.
 
-## Anfitrión
+## Anfitrión: seleccionar el alcance
 
-1. Configuración → Compartir biblioteca → **Elegir fichas para compartir**. Se abre una pantalla con la cuadrícula, búsqueda, categorías, avatares, filtros con/sin archivos y selección de vista Lista/Cuadrícula.
-2. Marca **fichas completas** con sus tarjetas. No se comparte ninguna por defecto. Puedes mostrar solo las seleccionadas para revisarlas.
-3. Los adjuntos forman parte de cada ficha elegida: **no se seleccionan archivos individualmente**. La ficha se comparte con todos sus adjuntos, así que respeta las licencias de redistribución.
-4. Vuelve a Configuración y pulsa **Iniciar compartir biblioteca**. Puedes mantener la sesión solo en LAN privada o habilitar **Compartir también por Internet (Cloudflare Tunnel)** para tener una invitación HTTPS temporal. Si falta el componente se solicitará consentimiento antes de descargarlo desde GitHub oficial y verificar su SHA-256.
-5. Copia la invitación privada. Usa **Detener biblioteca compartida** desde el encabezado para revocar el acceso. Al salir de SZKura se detiene la sesión y su túnel, si lo había.
+1. En **Configuración → Compartir biblioteca**, asigna un **nombre** reconocible a tu biblioteca.
+2. Selecciona **Compartir salvo excluidas** (modo predeterminado) o **Compartir solo incluidas**. El primer modo permite marcar únicamente los productos que quieres ocultar; el segundo comienza con ninguno incluido. **No se publica nada hasta pulsar Iniciar compartir biblioteca.**
+3. Por precaución, los productos marcados como contenido sensible están excluidos de ambos modos, salvo que actives expresamente «Permitir compartir también fichas NSFW».
+4. Pulsa **Elegir fichas para compartir**. Abre una página de ancho completo, con tarjetas y portadas como la biblioteca local: búsqueda, cuadrícula/lista, categorías, avatares y filtros con/sin archivos. Hay opciones de **Solo excluidas** o **Solo seleccionadas**, según el modo. Puedes volver a Configuración sin perder la selección.
+5. Al publicar una **ficha completa**, se ofrecen **todos sus adjuntos**. No existe un selector de archivos por separado. Antes de publicar, comprueba que los archivos están disponibles y que la licencia permite su redistribución.
+6. Pulsa **Iniciar compartir biblioteca**. SZKura crea una instantánea y calcula en segundo plano SHA-256 y BLAKE3 de los adjuntos. Puedes elegir **LAN privada** o **Compartir también por Internet (Cloudflare Tunnel)**. La instalación de cloudflared requiere consentimiento expreso y comprobación del SHA-256 oficial.
+7. Copia la invitación privada. **Detener biblioteca compartida** en el encabezado o salir de SZKura revoca la sesión y su túnel.
 
-Puedes seguir usando tu biblioteca local. Las ediciones posteriores no expanden la lista de permisos de una sesión existente; para modificarlos debes detenerla e iniciarla otra vez.
+Los productos ocultos son invisibles para el visitante: no se exponen sus títulos, recuentos, identificadores de SQLite, avatares, portadas ni archivos. Los cambios posteriores del anfitrión **no actualizan** una sesión ya iniciada; detén y reinicia la publicación para renovar su instantánea.
 
-El visitante **no recibe nombres, cantidades, identificadores, rutas ni indicios de elementos ocultos**. Los identificadores públicos se asignan correlativamente solo a los elementos visibles, independientemente de SQLite.
+## Visitante: navegar y actualizar
 
-## Visitante
+1. En la barra lateral, **debajo de los filtros**, abre **BIBLIOTECAS REMOTAS → Conectar a biblioteca**.
+2. Pega la invitación LAN o HTTPS del anfitrión. La barra superior y un banner del panel central muestran el **nombre de la biblioteca ajena**, con la indicación **Solo lectura**. La biblioteca local no se sustituye.
+3. Navega con cuadrícula/lista, búsqueda, categorías, avatares, NSFW y filtros con/sin archivos. **No hay botones de página**: al desplazarte se van solicitando más resultados. La API continúa paginada internamente en lotes de 32 para controlar memoria y transferencia.
+4. Cada tarjeta compara el identificador de origen o el artículo BOOTH y las firmas de adjuntos con tu SQLite local. Muestra **Nuevo**, **Ya en mi biblioteca** o **Archivos por actualizar**. En la ficha, SZKura comprueba además **los hashes reales de las copias locales en un worker**, no solo las firmas guardadas.
+5. Pulsa **Importar ficha completa** o **Actualizar ficha completa**, según corresponda. Se muestra una confirmación que explica las descargas y que se conservarán tus metadatos y versiones anteriores.
+6. SZKura descarga **solo** los archivos nuevos, distintos o ausentes, verifica tamaños y ambos hashes y revisa los contenedores ZIP/7z/RAR. El commit de producto y adjuntos ocurre después, en **una única transacción SQLite**. Si algo falla o se cancela antes del commit, no se crea una ficha importada a medias. **No hay opción de importar únicamente metadatos.**
 
-1. En la barra lateral, **debajo de los filtros**, abre la sección **BIBLIOTECAS REMOTAS → Conectar a biblioteca**.
-2. Pega la invitación privada LAN o HTTPS de Cloudflare que te proporcionó el anfitrión.
-3. Explora un catálogo con apariencia similar a tu biblioteca normal: cuadrícula/lista, búsqueda, filtros por categoría y avatar, NSFW y con/sin archivos. La ficha remota es de solo lectura.
-4. Pulsa **Importar a mi biblioteca** para importar la ficha completa con sus adjuntos; o **Solo guardar ficha** para conservar únicamente sus metadatos sin descargar archivos.
-5. SZKura verifica tamaño y SHA-256, importa los archivos sin ejecutarlos y conserva tus datos existentes si ya tienes la ficha BOOTH.
+### Identificar productos y archivos
+
+- El anfitrión conserva una **identidad secreta local** que permite derivar una clave opaca estable por producto. En el cliente se registra la clave asociada a la ficha local, **sin guardar los tokens o claves de invitación**.
+- Si todavía no existe un vínculo por origen, se utiliza el **ID canónico BOOTH** cuando está disponible. No se fusionan registros por parecido de nombre o ruta.
+- El almacén local usa **BLAKE3** como checksum de adjuntos; la transferencia compara también **SHA-256**. Un archivo local supuestamente igual, pero ausente o modificado, se recupera y verifica.
+- Si una versión nueva tiene el mismo nombre de archivo pero otro contenido, **se añade sin sobrescribir la versión anterior**. Los campos locales editados manualmente no se sustituyen por los del anfitrión. Las nuevas versiones de archivos no implican sincronización bidireccional.
 
 ## Seguridad
 
-- El servidor se inicia solo al pulsar Iniciar compartir biblioteca; se vincula a una interfaz IPv4 privada disponible o a loopback.
-- Invitación con token aleatorio de ruta y clave aleatoria independiente de 256 bits en el fragmento de URL. El cliente envía la clave en la cabecera X-SZKura-Library-Key. Todas las peticiones deben estar autorizadas.
-- LAN usa HTTP sin cifrar: **solo redes privadas de confianza**. La alternativa por Internet usa una URL HTTPS temporal de Cloudflare Quick Tunnel, enlazada al servidor local en 127.0.0.1 con clave privada obligatoria. No abrir puertos manualmente.
-- La cabecera privada no acredita la identidad del cliente: cualquiera con el enlace completo puede reproducir el protocolo.
-- No se envían rutas locales, la base de datos ni fichas/adjuntos de fichas no elegidas. Solo se admiten consultas GET; otros métodos, rutas ocultas y peticiones sin clave devuelven 404.
-- Publicar archivos adquiridos en BOOTH solo si la licencia del creador permite su redistribución.
-- **Compartir ficha** y **Compartir biblioteca** no se pueden activar a la vez: reutilizan el componente Cloudflare, sin duplicar sesiones. Ninguna de las dos ofrece una interfaz web.
+- Cada sesión usa un token aleatorio en la ruta y una clave de 256 bits en el fragmento `#key=...` de la invitación. El cliente envía la clave en `X-SZKura-Library-Key`. Todos los endpoints deben verificarla; la cabecera es una **credencial de portador**, no una prueba de identidad de la aplicación.
+- LAN usa HTTP sin cifrar: **solo redes privadas de confianza**. El modo Internet usa HTTPS de Cloudflare Quick Tunnel, conectado al servidor de SZKura por `127.0.0.1`. Las URL temporales no garantizan disponibilidad a largo plazo.
+- El catálogo solo admite peticiones GET autenticadas; no ofrece edición remota ni comparte rutas de archivos locales o SQLite. No abrir puertos del servidor LAN directamente a Internet.
+- **Compartir ficha** y **Compartir biblioteca** son mutuamente excluyentes: no se deben iniciar dos túneles de SZKura en paralelo.
+- Las licencias BOOTH deben permitir expresamente la redistribución de cualquier asset que quieras ofrecer.
 
-## Límites del MVP
+## Límites y advertencias
 
-- Máximo 2000 fichas y 512 adjuntos publicados, 8 GiB por archivo y 16 GiB en total. El cálculo de SHA-256 ocurre en segundo plano y puede tardar en bibliotecas grandes.
-- Paginación hasta 32 fichas por solicitud y máximo cuatro conexiones de API simultáneas.
-- No hay cuentas, registro de bibliotecas guardadas, reconexión persistente ni edición colaborativa. Cloudflare Quick Tunnel HTTPS es temporal, no garantiza permanencia ni un servicio estable de hosting.
-- El catálogo remoto es una instantánea; no se sincroniza mientras la sesión está activa.
-- Algunas transmisiones en curso pueden tardar en interrumpirse cuando el anfitrión detiene el servidor; las peticiones nuevas se rechazan.
-- Pendiente revisión visual manual ES/EN, paletas y ventanas estrechas/anchas.
+- Hasta **2000 fichas** y **512 adjuntos** por sesión, **8 GiB por archivo** y **16 GiB** en total. Cuatro peticiones concurrentes del servidor y páginas HTTP de 32 productos. En bibliotecas grandes el hash inicial puede tardar.
+- La UI limita y carga bajo demanda las portadas remotas visibles para evitar acumular texturas en memoria.
+- Sin cuentas, reconexión persistente, sincronización bidireccional, borrado automático de versiones antiguas ni reanudación de descargas.
+- Si el proceso se interrumpe abruptamente durante la incorporación física de archivos, pueden quedar copias huérfanas no enlazadas; no se sobrescriben originales. Para errores normales, se limpian archivos recién incorporados y se revierte la transacción SQLite.
+- **La compilación automática no sustituye la revisión visual** ES/EN, cuatro paletas, ventanas pequeñas/grandes, ni las pruebas manuales entre dos equipos mediante LAN y Cloudflare.
 
-## API LAN v1
+## API de solo lectura v2
 
-Los recursos de solo lectura son:
+- `GET /l/{token}/v1/library` — versión de protocolo, nombre, número de fichas publicadas y filtros de avatar disponibles (no incluye ocultas)
+- `GET /l/{token}/v1/assets` — catálogo y firmas de contenido, paginado internamente, con filtros
+- `GET /l/{token}/v1/assets/{id}` — ficha completa autorizada con origen opaco y adjuntos
+- `GET /l/{token}/v1/covers/{id}` — portada visible
+- `GET /l/{token}/v1/files/{id}` — archivo autorizado, con verificación de contenido en cliente
 
-- GET /l/{token}/v1/library
-- GET /l/{token}/v1/assets
-- GET /l/{token}/v1/assets/{id}
-- GET /l/{token}/v1/covers/{id}
-- GET /l/{token}/v1/files/{id}
-
-La lista filtra por búsqueda, categoría, avatar, NSFW y con/sin archivos; soporta offset y limit. Las respuestas muestran exclusivamente el contenido que el anfitrión permitió compartir.
+**La versión de protocolo es 2** aunque las rutas mantengan `/v1/` por compatibilidad de forma; cliente y anfitrión necesitan una versión compatible de SZKura. Los productos no seleccionados no aparecen en ningún resultado.
