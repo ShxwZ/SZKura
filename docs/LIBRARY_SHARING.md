@@ -14,6 +14,8 @@ Función opcional de la [issue #6](https://github.com/ShxwZ/SZKura/issues/6). Se
 
 Los productos ocultos son invisibles para el visitante: no se exponen sus títulos, recuentos, identificadores de SQLite, avatares, portadas ni archivos. Los cambios posteriores del anfitrión **no actualizan** una sesión ya iniciada; detén y reinicia la publicación para renovar su instantánea.
 
+La visualización remota reutiliza el mismo pintado de portadas, fondo desenfocado y estructura de ficha que la biblioteca local. Las imágenes se solicitan en paralelo bajo demanda; una portada lenta no bloquea a las demás. La ficha se abre en cuanto llega su JSON y, si hace falta, la comprobación de archivos locales se completa después en segundo plano. Los fallos de red de las portadas se pueden reintentar desde el catálogo. Ninguna de estas acciones modifica la biblioteca anfitriona.
+
 ## Visitante: navegar y actualizar
 
 1. En la barra lateral, **debajo de los filtros**, abre **BIBLIOTECAS REMOTAS → Conectar a biblioteca**.

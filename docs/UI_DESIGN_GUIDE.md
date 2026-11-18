@@ -56,6 +56,13 @@
 - **Resumen de producto:** nunca expandirlo al ancho completo de la columna si la portada está limitada a 480 pt. Usar un sub-UI de ancho exacto al editor de portada y altura dictada por su contenido, con márgenes verticales compactos, recuento de archivos y avatares abreviados (`Avatar: MAYA +N`). Evitar espacios en blanco causados por alturas heredadas de la columna vecina.
 - `ScrollArea` solo donde hay contenido potencialmente largo; títulos, volver y acciones principales deben permanecer localizables. Evitar scrolls anidados salvo visores de archivos que lo requieran.
 
+## Bibliotecas compartidas (lectura remota)
+
+- **Una sola portada:** `ui_support::paint_cover` dibuja imágenes locales y remotas con idéntica geometría de encaje y fondo desenfocado de 64×64. Se descargan por HTTP y se decodifican fuera del hilo de egui; portadas de hasta **32 MiB / 24 MP** como en el catálogo nativo, con texturas limitadas por presupuesto de memoria.
+- **Sin bloqueo en las fichas:** al abrir una ficha remota, primero se consulta y dibuja su manifiesto JSON. La verificación del contenido local con BLAKE3 arranca después, en otro trabajador cancelable, indicando su estado sin impedir navegar o volver.
+- **Diseño común:** misma portada, columna del 40 % hasta 482 pt, tarjeta RESUMEN, campos informativos, sección de archivos y encabezado de 23 pt. Solo cambian los controles: biblioteca remota es de solo lectura y permite importar, no editar ni borrar el host.
+- **Portadas de red:** hasta tres peticiones simultáneas, prioridad para la ficha abierta, reintento manual si hay errores y mensajes distintos para cargando/sin portada/portada no disponible. Mantener pruebas de codificación, tamaños y geometría.
+
 ## Checklist para cada PR de interfaz
 
 - [ ] Revisar Ónix, Jade, Amatista y Ámbar, incluyendo portadas, estados hover/selección y texto.
