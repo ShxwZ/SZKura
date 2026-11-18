@@ -36,6 +36,20 @@ fn poll_result<T>(rx:&mut Option<Receiver<Result<T,String>>>)->Option<Result<T,S
     result
 }
 
+/// Retrieve all products without relying on the 500-record SQL page cap.
+fn load_publishable_products(db:&Catalog)->anyhow::Result<Vec<Asset>>{
+    let mut all=Vec::new();
+    loop {
+        let page=db.list_filtered_visibility("","","",FileFilter::All,
+            false,true,500,all.len() as i64)?;
+        if page.is_empty(){break;}
+        let length=page.len();
+        all.extend(page);
+        if all.len()>MAX_SELECTION || length<500 {break;}
+    }
+    Ok(all)
+}
+
 pub struct LibraryUi {
     pub remote_active:bool,
     host_products:Vec<Asset>,
@@ -159,16 +173,7 @@ impl LibraryUi {
             // page at 500 records; load the publication picker page by page.
             let result=(||->anyhow::Result<Vec<Asset>>{
                 let db=Catalog::open(&path)?;
-                let mut all=Vec::new();
-                loop {
-                    let page=db.list_filtered_visibility("","","",FileFilter::All,
-                        false,true,500,all.len() as i64)?;
-                    if page.is_empty(){break;}
-                    let length=page.len();
-                    all.extend(page);
-                    if all.len()>MAX_SELECTION || length<500 {break;}
-                }
-                Ok(all)
+                load_publishable_products(&db)
             })().map_err(|err|format!("{err:#}"));
             let _=tx.send(result);
         });
@@ -997,4 +1002,28 @@ impl LibraryUi {
         });
     }
 
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+    #[test]
+    fn loads_more_than_one_sql_page_for_publication_picker(){
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("catalog.sqlite");
+        let mut db=Catalog::open(&path).unwrap();
+        for i in 0..530{
+            db.create_product(&format!("Producto {i}"),"Ropa").unwrap();
+        }
+        let products=load_publishable_products(&db).unwrap();
+        assert_eq!(products.len(),530);
+    }
+    #[test]
+    fn host_and_remote_are_disabled_at_start(){
+        let ui=LibraryUi::new();
+        assert!(!ui.host_busy());
+        assert!(!ui.picker_open);
+        assert!(!ui.remote_active);
+        assert_eq!(ui.selection_count(),0);
+    }
 }
