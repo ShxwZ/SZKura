@@ -126,7 +126,10 @@ pub struct LibraryUi {
     browse_rx:Option<Receiver<Result<RemotePage,String>>>,
     browse_parameters:Option<(String,String,String,FileFilter,bool,usize)>,
     detail:Option<RemoteAsset>,
-    detail_rx:Option<Receiver<Result<(RemoteAsset,RemoteLocalState),String>>>,
+    detail_pending_id:Option<u64>,
+    detail_rx:Option<Receiver<Result<RemoteAsset,String>>>,
+    detail_verify_rx:Option<Receiver<Result<(u64,RemoteLocalState),String>>>,
+    detail_verify_cancel:Arc<AtomicBool>,
     detail_state:RemoteLocalState,
     import_rx:Option<Receiver<Result<szkura::db::RemoteCommitReport,String>>>,
     pending_import:Option<u64>,
@@ -162,7 +165,9 @@ impl Default for LibraryUi {
             search:String::new(),category:String::new(),avatar_filter:String::new(),
             files_filter:FileFilter::All,show_nsfw:false,remote_grid:true,
             remote_page:RemotePage{total:0,items:Vec::new()},offset:0,
-            browse_rx:None,browse_parameters:None,detail:None,detail_rx:None,
+            browse_rx:None,browse_parameters:None,detail:None,
+            detail_pending_id:None,detail_rx:None,detail_verify_rx:None,
+            detail_verify_cancel:Arc::new(AtomicBool::new(false)),
             detail_state:RemoteLocalState::Unknown,import_rx:None,pending_import:None,
             local_db_path:None,
             import_cancel:Arc::new(AtomicBool::new(false)),
@@ -183,13 +188,20 @@ impl LibraryUi {
         self.detail=None;
         self.status.clear();
     }
+    fn close_detail(&mut self){
+        self.detail_verify_cancel.store(true,Ordering::Relaxed);
+        self.detail_verify_rx=None;
+        self.detail_rx=None;
+        self.detail_pending_id=None;
+        self.detail=None;
+        self.detail_state=RemoteLocalState::Unknown;
+    }
     pub fn leave_remote(&mut self){
         self.remote_active=false;
         self.import_cancel.store(true,Ordering::Relaxed);
-        self.detail=None;
+        self.close_detail();
         self.pending_import=None;
         self.browse_rx=None;
-        self.detail_rx=None;
         self.connect_rx=None;
         self.cover_rx=None;
         self.cover_tx=None;
@@ -819,12 +831,38 @@ impl LibraryUi {
             }
         }
         if let Some(answer)=poll_result(&mut self.detail_rx){
+            let expected=self.detail_pending_id.take();
             match answer{
-                Ok((asset,state))=>{
-                    self.detail_state=state;
-                    self.detail=Some(asset);
+                Ok(asset) if expected==Some(asset.id)=>{
+                    // Show metadata immediately. Verifying existing local ZIPs can
+                    // take minutes, and must never delay opening the detail.
+                    self.detail_state=RemoteLocalState::Unknown;
+                    self.detail=Some(asset.clone());
+                    if let Some(db_path)=self.local_db_path.clone(){
+                        self.detail_verify_cancel=Arc::new(AtomicBool::new(false));
+                        let cancel=Arc::clone(&self.detail_verify_cancel);
+                        let (tx,rx)=mpsc::channel();
+                        self.detail_verify_rx=Some(rx);
+                        thread::spawn(move||{
+                            let result=library_lan::verified_local_state_with_cancel(
+                                &db_path,&asset,&cancel)
+                                .map(|state|(asset.id,state))
+                                .map_err(|err|format!("{err:#}"));
+                            let _=tx.send(result);
+                        });
+                    }
                 },
+                Ok(_)=>{},
                 Err(err)=>self.status=format!("{}: {err}",tr("Error al cargar ficha")),
+            }
+        }
+        if let Some(answer)=poll_result(&mut self.detail_verify_rx){
+            match answer{
+                Ok((id,state)) if self.detail.as_ref().is_some_and(|asset|asset.id==id)=>{
+                    self.detail_state=state;
+                },
+                Ok(_)=>{},
+                Err(err)=>self.status=format!("{}: {err}",tr("Error al comprobar archivos locales")),
             }
         }
         if let Some(answer)=poll_result(&mut self.import_rx){
@@ -913,7 +951,8 @@ impl LibraryUi {
         }
         if self.host_load_rx.is_some() || self.host_rx.is_some() || self.connect_rx.is_some()
             || self.browse_rx.is_some() || self.detail_rx.is_some()
-            || self.import_rx.is_some() || !self.cover_inflight.is_empty()
+            || self.detail_verify_rx.is_some() || self.import_rx.is_some()
+            || !self.cover_inflight.is_empty()
             || !self.cover_queue.is_empty(){
             ctx.request_repaint_after(Duration::from_millis(120));
         }
@@ -985,16 +1024,15 @@ impl LibraryUi {
     }
     fn fetch_detail(&mut self,id:u64){
         let Some(connection)=self.connection.clone() else{return;};
-        let Some(db_path)=self.local_db_path.clone() else{return;};
-        if self.detail_rx.is_some(){return;}
+        self.close_detail();
+        self.detail_pending_id=Some(id);
+        self.status.clear();
+        // Metadata request alone: do NOT rehash local archives while opening.
         let (tx,rx)=mpsc::channel();
         self.detail_rx=Some(rx);
         thread::spawn(move||{
-            let result=(||->anyhow::Result<_>{
-                let asset=library_lan::get_asset(&connection,id)?;
-                let state=library_lan::verified_local_state(&db_path,&asset)?;
-                Ok((asset,state))
-            })().map_err(|err|format!("{err:#}"));
+            let result=library_lan::get_asset(&connection,id)
+                .map_err(|err|format!("{err:#}"));
             let _=tx.send(result);
         });
     }
