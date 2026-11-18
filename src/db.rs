@@ -1,7 +1,8 @@
 //! Product-centric catalog. SQLite schema upgrades preserve alpha.3 libraries.
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::path::Path;
+use std::{path::Path,fs};
+use rand::{rngs::OsRng,RngCore};
 
 pub const CATEGORIES: &[&str] = &["Avatar", "Ropa", "Accesorios", "Pelo", "Texturas", "Animaciones", "Mundos", "Herramientas", "Otros"];
 
@@ -53,6 +54,9 @@ pub struct NewAttachment<'a> {
     pub count: i64,
     pub mode: ArchiveMode,
 }
+
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum RemoteFileState { Complete,NeedsUpdate(usize) }
 
 pub struct Catalog { conn: Connection }
 
@@ -111,6 +115,18 @@ impl Catalog {
                  value TEXT NOT NULL
              );
              -- Each product can have folders in several storage roots over time.
+             -- Long-lived identity, created only after the host explicitly shares.
+             CREATE TABLE IF NOT EXISTS shared_library_identity (
+                 id INTEGER PRIMARY KEY CHECK(id=1), secret BLOB NOT NULL
+             );
+             -- Only an opaque, keyed source fingerprint is retained; NEVER a
+             -- share URL or its access key. Preserves identity without BOOTH.
+             CREATE TABLE IF NOT EXISTS imported_library_sources (
+                 origin_key TEXT PRIMARY KEY,
+                 asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS imported_library_sources_asset
+                 ON imported_library_sources(asset_id);
              CREATE TABLE IF NOT EXISTS managed_folders (
                  id INTEGER PRIMARY KEY,
                  asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
@@ -549,6 +565,54 @@ impl Catalog {
         normalized.dedup();
         normalized.truncate(512);
         Ok(normalized)
+    }
+
+    /// Stable per-installation secret; materialized only after explicit sharing.
+    /// The public origin key is keyed with this value so local SQLite IDs
+    /// cannot be guessed from a remote catalog.
+    pub fn shared_library_secret(&mut self)->Result<[u8;32]>{
+        let mut fresh=[0u8;32];
+        OsRng.fill_bytes(&mut fresh);
+        self.conn.execute("INSERT OR IGNORE INTO shared_library_identity(id,secret)
+            VALUES(1,?1)",[fresh.as_slice()])?;
+        let secret:Vec<u8>=self.conn.query_row(
+            "SELECT secret FROM shared_library_identity WHERE id=1",[],|r|r.get(0))?;
+        Ok(secret.try_into().map_err(|_|anyhow::anyhow!("Invalid share secret"))?)
+    }
+    pub fn existing_remote_source(&self,origin_key:&str)->Result<Option<i64>>{
+        if origin_key.len()!=64 || !origin_key.bytes().all(|b|b.is_ascii_hexdigit()){
+            bail!("Identificador de origen inválido");
+        }
+        Ok(self.conn.query_row(
+            "SELECT asset_id FROM imported_library_sources WHERE origin_key=?1",
+            [origin_key],|r|r.get(0)).optional()?)
+    }
+    /// Prefer exact origin matches, fall back to BOOTH's canonical item ID,
+    /// never guess matches from titles, descriptions or similar filenames.
+    pub fn resolve_remote_product(&self,origin_key:&str,booth_url:&str)
+        ->Result<Option<i64>>{
+        if let Some(id)=self.existing_remote_source(origin_key)?{return Ok(Some(id));}
+        if booth_url.is_empty(){return Ok(None);}
+        self.existing_booth_link(booth_url)
+    }
+    /// Recorded file hashes may be stale; verify file existence and size
+    /// without blocking the egui paint loop (caller runs in a worker).
+    pub fn remote_file_state(&self,local_id:i64,
+        expected:&[(String,String,u64)])->Result<RemoteFileState>{
+        let attachments=self.attachments_for(local_id)?;
+        let mut pending=0usize;
+        for (name,hash,size) in expected{
+            let matches=attachments.iter().any(|entry|{
+                entry.original_name==*name && entry.checksum==*hash
+                    && u64::try_from(entry.bytes).ok()==Some(*size)
+                    && fs::symlink_metadata(&entry.stored_path).ok().is_some_and(|meta|
+                        meta.is_file() && !meta.file_type().is_symlink()
+                            && meta.len()==*size)
+            });
+            if !matches{pending+=1;}
+        }
+        Ok(if pending==0{RemoteFileState::Complete}
+            else{RemoteFileState::NeedsUpdate(pending)})
     }
 
     pub fn exists_checksum(&self, checksum: &str) -> Result<bool> {
