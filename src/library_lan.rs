@@ -190,8 +190,12 @@ fn permitted_cover(path: &Path) -> bool {
 
 /// Snapshot is immutable for the duration of this manual session.
 /// This guarantees visibility and file allowlists cannot accidentally expand.
-fn snapshot(db_path: &Path, choice: &ShareSelection, cancel: &AtomicBool)
-    -> Result<Snapshot> {
+fn snapshot(db_path:&Path,choice:&ShareSelection,name:&str,cancel:&AtomicBool)
+    ->Result<Snapshot>{
+    if name.trim().is_empty() || name.len()>80
+        || name.chars().any(char::is_control){
+        bail!("Nombre de biblioteca no válido");
+    }
     if choice.products.is_empty() || choice.products.len() > MAX_PRODUCTS {
         bail!("Selecciona entre 1 y 2000 fichas antes de compartir");
     }
@@ -252,7 +256,7 @@ fn snapshot(db_path: &Path, choice: &ShareSelection, cancel: &AtomicBool)
     }
     Ok(Snapshot {
         info:LibraryInfo {
-            version:PROTOCOL_VERSION,name:"Biblioteca compartida".into(),
+            version:PROTOCOL_VERSION,name:name.trim().into(),
             products:assets.len(),avatars:avatars.into_iter().take(512).collect(),
         }, assets, covers, files,
     })
@@ -410,6 +414,7 @@ fn handle_request(request:Request,snapshot:&Snapshot,prefix:&str,key:&str,
 
 pub struct LibrarySession {
     pub invitation:String,
+    pub name:String,
     pub visible:usize,
     pub downloadable:usize,
     stop:Arc<AtomicBool>,
@@ -428,8 +433,8 @@ impl Drop for LibrarySession {
 /// Manually start a private LAN session, or a loopback-only session published
 /// through the existing verified Cloudflare component after separate consent.
 pub fn start_library(db_path:&Path,selection:&ShareSelection,data_dir:&Path,
-    internet:bool,cancel:&AtomicBool)->Result<LibrarySession> {
-    let snapshot=snapshot(db_path,selection,cancel)?;
+    internet:bool,name:&str,cancel:&AtomicBool)->Result<LibrarySession> {
+    let snapshot=snapshot(db_path,selection,name,cancel)?;
     if cancel.load(Ordering::Relaxed) { bail!("Operación cancelada"); }
     let ip=if internet{Ipv4Addr::LOCALHOST}else{selected_lan_ip()};
     let server=Server::http(format!("{ip}:0"))
@@ -445,6 +450,7 @@ pub fn start_library(db_path:&Path,selection:&ShareSelection,data_dir:&Path,
     let snapshot=Arc::new(snapshot);
     let files=snapshot.files.len();
     let visible=snapshot.assets.len();
+    let name=snapshot.info.name.clone();
     let thread_key=key.clone();
     let thread_prefix=prefix.clone();
     thread::spawn(move||{
@@ -487,7 +493,7 @@ pub fn start_library(db_path:&Path,selection:&ShareSelection,data_dir:&Path,
     let invitation=if let Some(ref tunnel)=tunnel{
         format!("{}{}#key={key}",tunnel.base_url,prefix)
     }else{local_url};
-    Ok(LibrarySession {invitation,visible,downloadable:files,stop,tunnel})
+    Ok(LibrarySession {invitation,name,visible,downloadable:files,stop,tunnel})
 }
 
 #[derive(Clone)]
@@ -844,7 +850,7 @@ mod tests {
         // scenario verifies metadata allowlisting and public IDs independently.
         let mut selected=ShareSelection::default();
         selected.products.insert(public);
-        let snapshot=snapshot(&db_path,&selected,&AtomicBool::new(false)).unwrap();
+        let snapshot=snapshot(&db_path,&selected,"Biblioteca de prueba",&AtomicBool::new(false)).unwrap();
         assert_eq!(snapshot.info.products,1);
         assert_eq!(snapshot.assets.len(),1);
         assert_eq!(snapshot.assets[0].id,1);
@@ -885,7 +891,7 @@ mod tests {
         assert!(public_id>0);
         let mut selection=ShareSelection::default();
         selection.products.insert(visible);
-        let session=start_library(&db_path,&selection,tmp.path(),false,&AtomicBool::new(false)).unwrap();
+        let session=start_library(&db_path,&selection,tmp.path(),false,"Biblioteca de prueba",&AtomicBool::new(false)).unwrap();
         let receiver=connect(&session.invitation).unwrap();
         assert_eq!(receiver.info.products,1);
         let page=browse(&receiver,"","","",FileFilter::All,true,0).unwrap();
@@ -931,7 +937,7 @@ mod tests {
         drop(db);
         let mut selected=ShareSelection::default();
         selected.products.insert(public);
-        let session=start_library(&host,&selected,tmp.path(),false,&AtomicBool::new(false)).unwrap();
+        let session=start_library(&host,&selected,tmp.path(),false,"Biblioteca de prueba",&AtomicBool::new(false)).unwrap();
         let conn=connect(&session.invitation).unwrap();
         let destination=tmp.path().join("assets");
         let covers=tmp.path().join("covers");
