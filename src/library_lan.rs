@@ -166,6 +166,11 @@ fn snapshot(db_path: &Path, choice: &ShareSelection, cancel: &AtomicBool)
     for (&local_id, allowed_file_ids) in &choice.products {
         if cancel.load(Ordering::Relaxed) { bail!("Operación cancelada"); }
         let asset = db.get(local_id)?.context("Una ficha seleccionada ya no existe")?;
+        if asset.title.len()>512 || asset.creator.len()>512
+            || asset.tags.len()>8_000 || asset.description.len()>32_000
+            || asset.booth_url.len()>2_048 {
+            bail!("Una ficha seleccionada supera los límites de metadatos publicados");
+        }
         let id = assets.len() as u64 + 1;
         let cover = PathBuf::from(&asset.image_path);
         let has_cover = !asset.image_path.is_empty() && permitted_cover(&cover);
@@ -261,7 +266,7 @@ fn filtered_assets(snapshot:&Snapshot, params:&HashMap<String,String>)->RemotePa
     let filtered:Vec<_>=snapshot.assets.iter().filter(|asset| {
         (category.is_empty() || asset.category==category)
             && (avatar.is_empty() || asset.avatars.iter().any(|s|s==&avatar))
-            && (filter.is_empty() || [&asset.title,&asset.creator,&asset.tags,&asset.description]
+            && (filter.is_empty() || [&asset.title,&asset.creator,&asset.tags]
                 .iter().any(|text|text.to_lowercase().contains(&filter)))
     }).collect();
     RemotePage {
@@ -270,12 +275,13 @@ fn filtered_assets(snapshot:&Snapshot, params:&HashMap<String,String>)->RemotePa
     }
 }
 fn handle_request(request:Request,snapshot:&Snapshot,prefix:&str,key:&str,stop:&AtomicBool) {
-    let uri=request.url();
-    if stop.load(Ordering::Relaxed) || unauthorized(&request,key,prefix) {
+    let uri=request.url().to_owned();
+    if uri.len()>4_096 || stop.load(Ordering::Relaxed)
+        || unauthorized(&request,key,prefix) {
         let _=request.respond(Response::empty(StatusCode(404)));
         return;
     }
-    let (path,query)=uri.split_once('?').unwrap_or((uri,""));
+    let (path,query)=uri.split_once('?').unwrap_or((&uri,""));
     let suffix=path.strip_prefix(prefix).unwrap_or("");
     let params:HashMap<String,String>=url::form_urlencoded::parse(query.as_bytes())
         .take(8).map(|(k,v)|(k.into_owned(),v.into_owned())).collect();
@@ -424,7 +430,8 @@ fn lan_url(invitation:&str)->Result<(Url,String)> {
     Ok((url,key))
 }
 fn http_client()->Result<Client> {
-    Ok(Client::builder().redirect(Policy::none())
+    // Never route private LAN access tokens through environment HTTP proxies.
+    Ok(Client::builder().redirect(Policy::none()).no_proxy()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(40)).build()?)
 }
@@ -432,9 +439,14 @@ fn response(conn:&RemoteConnection,path:&str)->Result<reqwest::blocking::Respons
     let mut url=conn.base.clone();
     url.set_path(&format!("{}{}",conn.base.path(),path));
     url.set_query(None);
+    let timeout=if path.starts_with("/v1/files/") {
+        // Large verified LAN downloads can exceed a regular API timeout.
+        Duration::from_secs(3 * 60 * 60)
+    }else{Duration::from_secs(40)};
     let response=conn.client.get(url)
         .header(KEY_HEADER,&conn.key)
         .header("Accept","application/octet-stream")
+        .timeout(timeout)
         .send().context("No se pudo conectar con la biblioteca remota")?;
     if !response.status().is_success(){
         bail!("La biblioteca no está disponible o el archivo no está autorizado ({})",
@@ -488,6 +500,19 @@ pub fn get_asset(conn:&RemoteConnection,id:u64)->Result<RemoteAsset>{
     }
     Ok(asset)
 }
+/// Decode untrusted covers only after checking header dimensions. Prevents
+/// decompressing a tiny compressed image into an enormous pixel allocation.
+pub fn decode_cover_small(bytes:&[u8], max_side:u32)->Option<image::RgbaImage> {
+    if bytes.len() as u64>MAX_COVER_BYTES || max_side==0 {return None;}
+    let header=image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format().ok()?;
+    let (width,height)=header.into_dimensions().ok()?;
+    if width==0 || height==0 || width>6_000 || height>6_000
+        || width as u64*height as u64>24_000_000 {return None;}
+    let decoded=image::load_from_memory(bytes).ok()?;
+    Some(decoded.thumbnail(max_side,max_side).to_rgba8())
+}
+
 pub fn fetch_cover(conn:&RemoteConnection,id:u64)->Result<Option<Vec<u8>>>{
     let mut url=conn.base.clone();
     url.set_path(&format!("{}/v1/covers/{id}",conn.base.path()));
@@ -565,10 +590,8 @@ pub fn import_asset(conn:&RemoteConnection,id:u64,chosen:&BTreeSet<u64>,
     let cover=if asset.has_cover {
         match fetch_cover(conn,id)? {
             Some(bytes) if bytes.len()<=MAX_COVER_BYTES as usize => {
-                match image::load_from_memory(&bytes) {
-                    Ok(image) if image.width()<=6000 && image.height()<=6000 =>Some(bytes),
-                    _=>None,
-                }
+                if decode_cover_small(&bytes,320).is_some(){Some(bytes)}
+                else{None}
             },
             _=>None,
         }
