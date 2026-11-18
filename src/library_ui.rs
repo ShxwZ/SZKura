@@ -8,13 +8,17 @@ use std::{
     thread,time::Duration,
 };
 use szkura::{
-    db::{Asset, Attachment, Catalog, FileFilter, CATEGORIES},
+    db::{Asset, Catalog, FileFilter, CATEGORIES},
+    share_transfer,
     library_lan::{self,LibrarySession,ShareSelection,RemoteConnection,RemoteAsset,
         RemoteSummary,RemotePage},
 };
-use crate::{i18n::tr,theme::colors,ui_support::{Icon,action,icon}};
+use crate::{i18n::tr,theme::colors,ui_support::{
+    Icon,action,icon,nav_choice,nav_sensitive_choice,
+    confirmation_dialog,dialog_subject,dialog_text,ConfirmChoice,ConfirmTone,
+}};
 
-const SETTINGS_PAGE:usize=50;
+const MAX_SELECTION:usize=2_000;
 struct CoverReady {
     id:u64,
     image:Option<egui::ColorImage>,
@@ -36,28 +40,37 @@ pub struct LibraryUi {
     pub remote_active:bool,
     host_products:Vec<Asset>,
     host_load_rx:Option<Receiver<Result<Vec<Asset>,String>>>,
-    host_files:HashMap<i64,Vec<Attachment>>,
     host_selection:ShareSelection,
-    host_filter:String,
-    host_page:usize,
-    host_expanded:BTreeSet<i64>,
+    pub picker_open:bool,
+    pub picker_grid:bool,
+    pub host_filter:String,
+    host_category:String,
+    host_avatar_filter:String,
+    host_files_filter:FileFilter,
+    host_show_nsfw:bool,
+    host_selected_only:bool,
     pub host_session:Option<LibrarySession>,
     host_rx:Option<Receiver<Result<LibrarySession,String>>>,
     host_cancel:Arc<AtomicBool>,
     host_status:String,
+    internet_access:bool,
+    product_share_busy:bool,
+    pending_tunnel_consent:bool,
     invite_input:String,
     connection:Option<RemoteConnection>,
     connect_rx:Option<Receiver<Result<RemoteConnection,String>>>,
     search:String,
     category:String,
     avatar_filter:String,
+    files_filter:FileFilter,
+    show_nsfw:bool,
+    pub remote_grid:bool,
     remote_page:RemotePage,
     offset:usize,
     browse_rx:Option<Receiver<Result<RemotePage,String>>>,
-    browse_parameters:Option<(String,String,String,usize)>,
+    browse_parameters:Option<(String,String,String,FileFilter,bool,usize)>,
     detail:Option<RemoteAsset>,
     detail_rx:Option<Receiver<Result<RemoteAsset,String>>>,
-    chosen_files:BTreeSet<u64>,
     import_rx:Option<Receiver<Result<i64,String>>>,
     import_cancel:Arc<AtomicBool>,
     cover_rx:Option<Receiver<CoverReady>>,
@@ -69,15 +82,18 @@ impl Default for LibraryUi {
     fn default()->Self{
         Self{
             remote_active:false,host_products:Vec::new(),host_load_rx:None,
-            host_files:HashMap::new(),
-            host_selection:ShareSelection::default(),host_filter:String::new(),
-            host_page:0,host_expanded:BTreeSet::new(),host_session:None,host_rx:None,
+            host_selection:ShareSelection::default(),picker_open:false,picker_grid:true,
+            host_filter:String::new(),host_category:String::new(),
+            host_avatar_filter:String::new(),host_files_filter:FileFilter::All,
+            host_show_nsfw:false,host_selected_only:false,host_session:None,host_rx:None,
             host_cancel:Arc::new(AtomicBool::new(false)),host_status:String::new(),
+            internet_access:false,product_share_busy:false,pending_tunnel_consent:false,
             invite_input:String::new(),connection:None,connect_rx:None,
             search:String::new(),category:String::new(),avatar_filter:String::new(),
+            files_filter:FileFilter::All,show_nsfw:false,remote_grid:true,
             remote_page:RemotePage{total:0,items:Vec::new()},offset:0,
             browse_rx:None,browse_parameters:None,detail:None,detail_rx:None,
-            chosen_files:BTreeSet::new(),import_rx:None,
+            import_rx:None,
             import_cancel:Arc::new(AtomicBool::new(false)),
             cover_rx:None,cover_textures:HashMap::new(),status:String::new(),
         }
@@ -143,54 +159,125 @@ impl LibraryUi {
             let _=tx.send(result);
         });
     }
-    fn start_sharing(&mut self,db_path:&Path){
-        if self.host_rx.is_some() || self.host_session.is_some(){return;}
-        if self.host_selection.products.is_empty(){
-            self.host_status=tr("Selecciona al menos una ficha.").into();
-            return;
-        }
-        self.host_cancel=Arc::new(AtomicBool::new(false));
-        let cancel=Arc::clone(&self.host_cancel);
-        let selected=self.host_selection.clone();
-        let path=db_path.to_owned();
-        let (tx,rx)=mpsc::channel();
-        self.host_rx=Some(rx);
-        self.host_status=tr("Preparando catálogo y verificando adjuntos...").into();
-        thread::spawn(move||{
-            let response=library_lan::start_library(&path,&selected,&cancel)
-                .map_err(|err|format!("{err:#}"));
-            let _=tx.send(response);
-        });
-    }
-
     /// All choices are local UI state, never published until the host explicitly
     /// presses Start. Files start unselected even when a product is selected.
-    pub fn settings_ui(&mut self,ui:&mut egui::Ui,db:&Catalog,db_path:&Path){
+    /// One sharing session at a time, including a pending Cloudflare install.
+    pub fn host_busy(&self)->bool{
+        self.host_session.is_some() || self.host_rx.is_some()
+            || self.pending_tunnel_consent
+    }
+    pub fn set_product_share_busy(&mut self,busy:bool){self.product_share_busy=busy;}
+    pub fn selection_count(&self)->usize{self.host_selection.products.len()}
+    pub fn selected(&self,id:i64)->bool{self.host_selection.products.contains(&id)}
+    pub fn toggle_selected(&mut self,id:i64){
+        if !self.host_selection.products.insert(id){
+            self.host_selection.products.remove(&id);
+        }
+    }
+    pub fn picker_indices(&self)->Vec<usize>{
+        let filter=self.host_filter.trim().to_lowercase();
+        self.host_products.iter().enumerate().filter(|(_,asset)|{
+            (!self.host_selected_only || self.selected(asset.id))
+            && (self.host_show_nsfw || !asset.nsfw)
+            && (self.host_category.is_empty() || self.host_category==asset.category)
+            && (self.host_avatar_filter.is_empty() || asset.avatars.split(", ")
+                .any(|name|name.eq_ignore_ascii_case(&self.host_avatar_filter)))
+            && match self.host_files_filter{
+                FileFilter::All=>true,
+                FileFilter::WithFiles=>asset.attachments>0,
+                FileFilter::WithoutFiles=>asset.attachments==0
+            }
+            && (filter.is_empty() ||
+                [&asset.title,&asset.creator,&asset.category,&asset.avatars,&asset.tags]
+                    .iter().any(|text|text.to_lowercase().contains(&filter)))
+        }).map(|(index,_)|index).collect()
+    }
+    pub fn picker_asset(&self,index:usize)->Option<&Asset>{
+        self.host_products.get(index)
+    }
+    pub fn picker_search(&mut self,ui:&mut egui::Ui){
+        icon(ui,Icon::Search,colors().muted,19.0);
+        ui.add_sized([ui.available_width().min(610.0).max(180.0),36.0],
+            egui::TextEdit::singleline(&mut self.host_filter)
+                .hint_text(tr("Buscar productos, tiendas y etiquetas...")));
+        if !self.host_filter.is_empty()
+            && ui.button(tr("Limpiar")).clicked(){self.host_filter.clear();}
+    }
+    pub fn picker_sidebar(&mut self,ui:&mut egui::Ui){
+        ui.label(RichText::new(tr("SELECCIÓN PARA COMPARTIR"))
+            .strong().color(colors().accent).size(11.0));
+        ui.add_space(8.0);
+        let show=self.host_selected_only;
+        if nav_choice(ui,"Solo seleccionadas",show){self.host_selected_only=!show;}
+        ui.add_space(6.0);
+        if nav_sensitive_choice(ui,"Mostrar NSFW",self.host_show_nsfw){
+            self.host_show_nsfw=!self.host_show_nsfw;
+        }
+        ui.add_space(10.0);
+        ui.label(RichText::new(tr("CONTENIDO")).strong().color(colors().accent).size(11.0));
+        if nav_choice(ui,"Todos los productos",self.host_category.is_empty()){
+            self.host_category.clear();
+        }
+        for &cat in CATEGORIES{
+            if nav_choice(ui,cat,self.host_category==cat){self.host_category=cat.into();}
+        }
+        ui.add_space(12.0);ui.separator();ui.add_space(8.0);
+        ui.label(RichText::new(tr("AVATAR COMPATIBLE"))
+            .strong().color(colors().accent).size(11.0));
+        let mut avatars=BTreeSet::new();
+        for asset in &self.host_products {
+            for label in asset.avatars.split([',',';']) {
+                let label=label.trim();
+                if !label.is_empty(){avatars.insert(label.to_owned());}
+            }
+        }
+        egui::ComboBox::from_id_salt("picker-avatar")
+            .selected_text(if self.host_avatar_filter.is_empty(){
+                tr("Todos los avatares")
+            }else{&self.host_avatar_filter}).width(184.0)
+            .show_ui(ui,|ui|{
+                ui.selectable_value(&mut self.host_avatar_filter,String::new(),
+                    tr("Todos los avatares"));
+                for name in avatars.iter().take(512){
+                    ui.selectable_value(&mut self.host_avatar_filter,name.clone(),name);
+                }
+            });
+        ui.add_space(12.0);ui.separator();ui.add_space(8.0);
+        ui.label(RichText::new(tr("ARCHIVOS"))
+            .strong().color(colors().accent).size(11.0));
+        if nav_choice(ui,"Todos",self.host_files_filter==FileFilter::All){
+            self.host_files_filter=FileFilter::All;
+        }
+        if nav_choice(ui,"Con archivos",self.host_files_filter==FileFilter::WithFiles){
+            self.host_files_filter=FileFilter::WithFiles;
+        }
+        if nav_choice(ui,"Sin archivos",self.host_files_filter==FileFilter::WithoutFiles){
+            self.host_files_filter=FileFilter::WithoutFiles;
+        }
+        ui.add_space(12.0);
+        if nav_choice(ui,"Limpiar filtros",false){
+            self.host_filter.clear();self.host_category.clear();
+            self.host_avatar_filter.clear();self.host_files_filter=FileFilter::All;
+            self.host_show_nsfw=false;self.host_selected_only=false;
+        }
+    }
+    pub fn settings_ui(&mut self,ui:&mut egui::Ui,db_path:&Path,data_dir:&Path){
         ui.label(RichText::new(tr("Compartir biblioteca"))
             .size(17.0).strong().color(colors().text));
         ui.label(RichText::new(tr(
-            "Se inicia manualmente y se detiene al cerrar SZKura. Solo se publica lo seleccionado."))
+            "Elige fichas completas en la misma cuadrícula que tu biblioteca. Nada se comparte hasta que lo inicies."))
             .size(12.5).color(colors().muted));
         ui.label(RichText::new(tr(
-            "Solo para LAN privada de confianza; el transporte HTTP no cifra la conexión. No abrir puertos a Internet."))
-            .size(12.0).color(colors().accent));
-        ui.label(RichText::new(tr(
-            "Publica archivos únicamente si su licencia permite redistribuirlos."))
+            "Al elegir una ficha se incluyen sus adjuntos. Respeta las licencias de redistribución de BOOTH."))
             .size(12.0).color(colors().muted));
-        ui.add_space(8.0);
-        if let Some(session)=&self.host_session {
-            // Snapshot avoids borrowing the active session inside UI actions.
+        if let Some(session)=&self.host_session{
             let invitation=session.invitation.clone();
-            let visible=session.visible;
-            let downloadable=session.downloadable;
-            ui.label(RichText::new(format!("{}: {}",
-                tr("Fichas visibles"),visible))
+            ui.label(RichText::new(format!("{}: {}",tr("Fichas visibles"),session.visible))
                 .color(colors().accent).strong());
-            ui.label(RichText::new(format!("{}: {}",
-                tr("Adjuntos descargables"),downloadable))
+            ui.label(RichText::new(format!("{}: {}",tr("Adjuntos descargables"),session.downloadable))
                 .color(colors().muted));
-            let mut invite_display=invitation.clone();
-            ui.add(egui::TextEdit::singleline(&mut invite_display)
+            let mut view=invitation.clone();
+            ui.add(egui::TextEdit::singleline(&mut view)
                 .desired_width(ui.available_width()).interactive(false));
             ui.horizontal_wrapped(|ui|{
                 if action(ui,Icon::Link,"Copiar invitación",true){
@@ -200,8 +287,8 @@ impl LibraryUi {
                     self.stop_share();
                 }
             });
-            ui.label(RichText::new(tr("Para cambiar los permisos, detén la sesión y vuelve a compartir."))
-                .color(colors().muted).size(12.0));
+            ui.label(RichText::new(tr("Para cambiar qué fichas se comparten, detén la sesión."))
+                .size(12.0).color(colors().muted));
             return;
         }
         if self.host_rx.is_some(){
@@ -214,120 +301,103 @@ impl LibraryUi {
             });
             return;
         }
-        ui.horizontal_wrapped(|ui|{
-            if ui.button(tr("Cargar productos para seleccionar")).clicked(){
-                self.load_host_products(db_path);
-            }
-            if !self.host_products.is_empty(){
-                ui.label(format!("{}: {}",tr("Fichas seleccionadas"),
-                    self.host_selection.products.len()));
-                if ui.button(tr("Limpiar selección")).clicked(){
-                    self.host_selection.products.clear();
-                    self.host_expanded.clear();
-                }
-            }
-        });
-        if self.host_load_rx.is_some(){ui.spinner();}
-        if self.host_products.is_empty() {
-            ui.label(RichText::new(tr("Ninguna ficha se publicará hasta que la selecciones y pulses Compartir biblioteca."))
-                .color(colors().muted).size(12.0));
-            if !self.host_status.is_empty(){ui.label(tr(&self.host_status));}
+        if self.host_load_rx.is_some(){
+            ui.horizontal(|ui|{ui.spinner();ui.label(tr("Cargando selección de productos..."));});
+        }
+        ui.add_space(9.0);
+        if ui.add_enabled(self.host_load_rx.is_none(),
+            egui::Button::new(tr("Elegir fichas para compartir"))
+                .min_size(egui::vec2(200.0,36.0))).clicked(){
+            self.picker_open=true;
+            if self.host_products.is_empty(){self.load_host_products(db_path);}
+        }
+        ui.label(RichText::new(format!("{}: {}",tr("Fichas seleccionadas"),
+            self.selection_count())).color(colors().accent).size(13.0));
+        if ui.checkbox(&mut self.internet_access,
+            tr("Compartir también por Internet (Cloudflare Tunnel)")).changed(){
+            self.host_status=if self.internet_access{
+                tr("Se creará un enlace HTTPS temporal. Requiere Cloudflare Tunnel.").into()
+            }else{tr("Compartir solo en la red local.").into()};
+        }
+        ui.label(RichText::new(tr(if self.internet_access{
+            "La URL HTTPS usa Cloudflare Quick Tunnel; no es un servicio permanente."
+        }else{
+            "El acceso LAN utiliza HTTP sin cifrar: solo redes privadas de confianza."
+        })).size(12.0).color(colors().muted));
+        if self.product_share_busy{
+            ui.label(RichText::new(tr(
+                "Detén Compartir ficha antes de publicar una biblioteca. Solo puede haber un túnel activo."))
+                .color(colors().accent).size(12.0));
+        }
+        ui.add_space(9.0);
+        if ui.add_enabled(!self.product_share_busy && !self.host_selection.products.is_empty(),
+            egui::Button::new(tr("Iniciar compartir biblioteca"))
+                .fill(colors().primary).min_size(egui::vec2(220.0,36.0))).clicked(){
+            self.request_start(db_path,data_dir);
+        }
+        if !self.host_status.is_empty(){
+            ui.label(RichText::new(tr(&self.host_status))
+                .size(12.0).color(colors().muted));
+        }
+    }
+    fn request_start(&mut self,db_path:&Path,data_dir:&Path){
+        if self.product_share_busy || self.host_busy(){return;}
+        if self.host_selection.products.is_empty(){
+            self.host_status=tr("Selecciona al menos una ficha.").into();
             return;
         }
-        ui.add_sized([ui.available_width().min(520.0),36.0],
-            egui::TextEdit::singleline(&mut self.host_filter)
-                .hint_text(tr("Filtrar fichas por nombre, creador o categoría...")));
-        let query=self.host_filter.to_lowercase();
-        let matching:Vec<Asset>=self.host_products.iter()
-            .filter(|asset| query.is_empty() ||
-                [&asset.title,&asset.creator,&asset.category,&asset.avatars]
-                    .iter().any(|s|s.to_lowercase().contains(&query)))
-            .cloned().collect();
-        let pages=matching.len().div_ceil(SETTINGS_PAGE).max(1);
-        self.host_page=self.host_page.min(pages-1);
-        let start=self.host_page*SETTINGS_PAGE;
-        ui.horizontal(|ui|{
-            ui.label(format!("{}: {}/{}",tr("Página"),self.host_page+1,pages));
-            if ui.add_enabled(self.host_page>0,
-                egui::Button::new(tr("Anterior"))).clicked(){self.host_page-=1;}
-            if ui.add_enabled(self.host_page+1<pages,
-                egui::Button::new(tr("Siguiente"))).clicked(){self.host_page+=1;}
-            if ui.button(tr("Seleccionar las fichas de esta página")).clicked(){
-                for asset in matching.iter().skip(start).take(SETTINGS_PAGE){
-                    self.host_selection.products.entry(asset.id).or_default();
-                }
-            }
-        });
-        for asset in matching.iter().skip(start).take(SETTINGS_PAGE) {
-            let mut checked=self.host_selection.products.contains_key(&asset.id);
-            ui.horizontal_wrapped(|ui|{
-                if ui.checkbox(&mut checked,"").changed() {
-                    if checked {
-                        self.host_selection.products.entry(asset.id).or_default();
-                    }else{
-                        self.host_selection.products.remove(&asset.id);
-                    }
-                }
-                ui.add(egui::Label::new(RichText::new(&asset.title).strong().size(13.0))
-                    .truncate()).on_hover_text(&asset.title);
-                ui.label(RichText::new(tr(&asset.category)).color(colors().muted).size(12.0));
-                if checked {
-                    if ui.small_button(tr(if self.host_expanded.contains(&asset.id) {
-                        "Ocultar archivos"
-                    } else { "Elegir adjuntos" })).clicked() {
-                        if self.host_expanded.remove(&asset.id) {
-                            // Keep previously selected files in their whitelist.
-                        } else {
-                            self.host_expanded.insert(asset.id);
-                            if !self.host_files.contains_key(&asset.id) {
-                                match db.attachments_for(asset.id){
-                                    Ok(files)=>{self.host_files.insert(asset.id,files);},
-                                    Err(err)=>self.host_status=format!("{}: {err}",
-                                        tr("Error leyendo archivos")),
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-            if checked && self.host_expanded.contains(&asset.id){
-                ui.indent(format!("share-files-{}",asset.id),|ui|{
-                    ui.label(RichText::new(tr("Por defecto, ningún archivo se puede descargar."))
-                        .color(colors().muted).size(11.5));
-                    if let Some(files)=self.host_files.get(&asset.id){
-                        for file in files {
-                            let selection=self.host_selection.products.entry(asset.id).or_default();
-                            let mut published=selection.contains(&file.id);
-                            if ui.checkbox(&mut published,format!("{} ({})",
-                                file.original_name, file.bytes)).changed(){
-                                if published{selection.insert(file.id);}
-                                else{selection.remove(&file.id);}
-                            }
-                        }
-                    }
-                });
-            }
+        if self.internet_access && !share_transfer::component_present(data_dir){
+            self.pending_tunnel_consent=true;
+            return;
         }
-        ui.add_space(8.0);
-        if !self.host_status.is_empty(){
-            ui.label(RichText::new(tr(&self.host_status)).size(12.0).color(colors().muted));
-        }
-        if ui.add_enabled(!self.host_selection.products.is_empty(),
-            egui::Button::new(tr("Iniciar compartir biblioteca"))
-                .fill(colors().primary).min_size(egui::vec2(180.0,36.0)))
-            .clicked(){self.start_sharing(db_path);}
+        self.start_sharing(db_path,data_dir,false);
     }
+    fn start_sharing(&mut self,db_path:&Path,data_dir:&Path,install:bool){
+        if self.product_share_busy || self.host_session.is_some() || self.host_rx.is_some(){return;}
+        self.pending_tunnel_consent=false;
+        self.picker_open=false;
+        self.host_cancel=Arc::new(AtomicBool::new(false));
+        let cancel=Arc::clone(&self.host_cancel);
+        let choice=self.host_selection.clone();
+        let db=db_path.to_path_buf();
+        let data=data_dir.to_path_buf();
+        let internet=self.internet_access;
+        let (tx,rx)=mpsc::channel();
+        self.host_rx=Some(rx);
+        self.host_status=tr("Preparando catálogo y verificando adjuntos...").into();
+        thread::spawn(move||{
+            let result=(||{
+                if install{share_transfer::install_component_with_consent(&data)?;}
+                library_lan::start_library(&db,&choice,&data,internet,&cancel)
+            })().map_err(|err:anyhow::Error|format!("{err:#}"));
+            let _=tx.send(result);
+        });
+    }
+    pub fn render_consent(&mut self,ctx:&egui::Context,db_path:&Path,data_dir:&Path){
+        if !self.pending_tunnel_consent{return;}
+        let choice=confirmation_dialog(ctx,"shared-library-tunnel-consent",
+            "Descargar Cloudflare Tunnel","Descargar y compartir",
+            ConfirmTone::Primary,!self.product_share_busy,|ui|{
+                dialog_subject(ui,&format!("cloudflared {}",share_transfer::CLOUDFLARED_VERSION));
+                dialog_text(ui,tr("Se descargará desde GitHub oficial de Cloudflare solo con tu permiso."));
+                dialog_text(ui,tr("Se comprobará el SHA-256 antes de ejecutarlo. Puedes eliminar el componente desde Ajustes."));
+            });
+        match choice {
+            ConfirmChoice::Accept=>self.start_sharing(db_path,data_dir,true),
+            ConfirmChoice::Cancel=>self.pending_tunnel_consent=false,
+            ConfirmChoice::Pending=>{},
+        }
+    }
+
 
     pub fn poll(&mut self,ctx:&egui::Context)->Option<i64>{
         if let Some(answer)=poll_result(&mut self.host_load_rx){
             match answer {
-                Ok(products) if products.len()<=2_000=>{
+                Ok(products) if products.len()<=MAX_SELECTION=>{
+                    let valid:BTreeSet<_>=products.iter().map(|p|p.id).collect();
+                    self.host_selection.products.retain(|id|valid.contains(id));
                     self.host_products=products;
-                    self.host_files.clear();
-                    self.host_expanded.clear();
-                    self.host_selection.products.clear();
-                    self.host_page=0;
-                    self.host_status=tr("Selecciona las fichas y los archivos que deseas publicar.").into();
+                    self.host_status=tr("Selecciona las fichas que deseas publicar.").into();
                 },
                 Ok(_)=>self.host_status=tr("La biblioteca supera el límite de 2000 productos.").into(),
                 Err(err)=>self.host_status=format!("{}: {err}",tr("Error leyendo biblioteca")),
@@ -374,7 +444,7 @@ impl LibraryUi {
         }
         if let Some(answer)=poll_result(&mut self.detail_rx){
             match answer{
-                Ok(asset)=>{self.chosen_files.clear();self.detail=Some(asset);},
+                Ok(asset)=>{self.detail=Some(asset);},
                 Err(err)=>self.status=format!("{}: {err}",tr("Error al cargar ficha")),
             }
         }
