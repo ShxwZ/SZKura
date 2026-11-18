@@ -58,6 +58,8 @@ fn load_publishable_products(db:&Catalog)->anyhow::Result<Vec<Asset>>{
 pub struct LibraryUi {
     pub remote_active:bool,
     host_products:Vec<Asset>,
+    host_product_ids:BTreeSet<i64>,
+    host_sensitive_ids:BTreeSet<i64>,
     host_avatar_options:Vec<String>,
     host_load_rx:Option<Receiver<Result<Vec<Asset>,String>>>,
     host_included:BTreeSet<i64>,
@@ -115,6 +117,7 @@ impl Default for LibraryUi {
     fn default()->Self{
         Self{
             remote_active:false,host_products:Vec::new(),
+            host_product_ids:BTreeSet::new(),host_sensitive_ids:BTreeSet::new(),
             host_avatar_options:Vec::new(),host_load_rx:None,
             host_included:BTreeSet::new(),host_excluded:BTreeSet::new(),
             host_mode:PublishMode::Exclude,host_publish_nsfw:false,host_loaded:false,
@@ -227,17 +230,16 @@ impl LibraryUi {
     }
     pub fn selection_count(&self)->usize{self.selection().products.len()}
     pub fn selected(&self,id:i64)->bool{
-        let Some(asset)=self.host_products.iter().find(|asset|asset.id==id)
-            else{return false;};
-        (self.host_publish_nsfw || !asset.nsfw)
+        self.host_product_ids.contains(&id)
+            && (self.host_publish_nsfw || !self.host_sensitive_ids.contains(&id))
             && match self.host_mode{
                 PublishMode::Exclude=>!self.host_excluded.contains(&id),
                 PublishMode::Include=>self.host_included.contains(&id),
             }
     }
     pub fn toggle_disabled(&self,id:i64)->bool{
-        self.host_products.iter().find(|asset|asset.id==id)
-            .is_none_or(|asset|asset.nsfw && !self.host_publish_nsfw)
+        !self.host_product_ids.contains(&id) ||
+            (self.host_sensitive_ids.contains(&id) && !self.host_publish_nsfw)
     }
     pub fn toggle_selected(&mut self,id:i64){
         if self.toggle_disabled(id){return;}
@@ -629,6 +631,9 @@ impl LibraryUi {
                         }
                     }
                     self.host_avatar_options=avatar_names.into_iter().take(512).collect();
+                    self.host_product_ids=valid;
+                    self.host_sensitive_ids=products.iter().filter(|product|product.nsfw)
+                        .map(|product|product.id).collect();
                     self.host_products=products;
                     self.host_status=tr("Selecciona las fichas que deseas publicar.").into();
                 },
@@ -1343,6 +1348,9 @@ mod picker_tests {
         db.set_nsfw(sensitive,true).unwrap();
         let mut ui=LibraryUi::new();
         ui.host_products=load_publishable_products(&db).unwrap();
+        ui.host_product_ids=ui.host_products.iter().map(|asset|asset.id).collect();
+        ui.host_sensitive_ids=ui.host_products.iter()
+            .filter(|asset|asset.nsfw).map(|asset|asset.id).collect();
         assert!(ui.mode_is_exclude());
         assert_eq!(ui.selection_count(),2);
         assert!(!ui.selected(sensitive));
