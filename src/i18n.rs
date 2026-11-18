@@ -336,6 +336,63 @@ pub fn translate(language:Language,s:&str)->&str {
         "Las fichas BOOTH existentes conservarán sus metadatos. No se ejecutarán los archivos."=>"Existing BOOTH products will retain their metadata. Files will not be executed.",
         "Importar enlace SZKura"=>"Import SZKura link",
         "Ficha transferida e importada correctamente"=>"Transferred product imported successfully.",
+        "Compartir biblioteca"=>"Share library",
+        "Se inicia manualmente y se detiene al cerrar SZKura. Solo se publica lo seleccionado."=>"Starts manually and stops when SZKura closes. Only selected items are published.",
+        "Solo para LAN privada de confianza; el transporte HTTP no cifra la conexión. No abrir puertos a Internet."=>"For trusted private LANs only; HTTP does not encrypt traffic. Do not expose ports to the Internet.",
+        "Publica archivos únicamente si su licencia permite redistribuirlos."=>"Share files only if their license allows redistribution.",
+        "Biblioteca compartida detenida."=>"Library sharing stopped.",
+        "Fichas visibles"=>"Visible products",
+        "Adjuntos descargables"=>"Downloadable attachments",
+        "Copiar invitación"=>"Copy invitation",
+        "Detener biblioteca compartida"=>"Stop sharing library",
+        "Para cambiar los permisos, detén la sesión y vuelve a compartir."=>"To change permissions, stop sharing and start a new session.",
+        "Preparando catálogo y verificando adjuntos..."=>"Preparing catalog and verifying attachments...",
+        "Cargar productos para seleccionar"=>"Load products for selection",
+        "Fichas seleccionadas"=>"Selected products",
+        "Limpiar selección"=>"Clear selection",
+        "Ninguna ficha se publicará hasta que la selecciones y pulses Compartir biblioteca."=>"No products will be published until you select them and start sharing.",
+        "Filtrar fichas por nombre, creador o categoría..."=>"Filter products by name, creator or category...",
+        "Página"=>"Page",
+        "Anterior"=>"Previous",
+        "Siguiente"=>"Next",
+        "Seleccionar las fichas de esta página"=>"Select products on this page",
+        "Ocultar archivos"=>"Hide files",
+        "Elegir adjuntos"=>"Choose attachments",
+        "Por defecto, ningún archivo se puede descargar."=>"No files can be downloaded by default.",
+        "Iniciar compartir biblioteca"=>"Start sharing library",
+        "Biblioteca remota (solo lectura)"=>"Remote library (read-only)",
+        "BIBLIOTECA REMOTA"=>"REMOTE LIBRARY",
+        "Volver a mi biblioteca"=>"Return to my library",
+        "Pega la invitación de otro SZKura en tu red local."=>"Paste an invitation from another SZKura on your local network.",
+        "Conectar a biblioteca"=>"Connect to library",
+        "Desconectar"=>"Disconnect",
+        "fichas compartidas"=>"shared products",
+        "Volver al catálogo remoto"=>"Back to remote catalog",
+        "Adjuntos autorizados para descargar"=>"Attachments available for download",
+        "El anfitrión no ha ofrecido adjuntos para esta ficha."=>"The host has not offered attachments for this product.",
+        "Añadir ficha sin archivos"=>"Add product without files",
+        "Descargar e importar seleccionados"=>"Download and import selected",
+        "Cancelar descarga"=>"Cancel download",
+        "Buscar productos..."=>"Search products...",
+        "Todas las categorías"=>"All categories",
+        "Filtrar avatar..."=>"Filter avatar...",
+        "Resultados"=>"Results",
+        "archivos disponibles"=>"available files",
+        "Biblioteca compartida activa."=>"Library sharing active.",
+        "Selecciona las fichas y los archivos que deseas publicar."=>"Select the products and files to publish.",
+        "Selecciona al menos una ficha."=>"Select at least one product.",
+        "La biblioteca supera el límite de 2000 productos."=>"The library exceeds the 2,000-product limit.",
+        "Error leyendo biblioteca"=>"Could not read library",
+        "Error leyendo archivos"=>"Could not read files",
+        "Error al compartir"=>"Could not share library",
+        "Conectando con la biblioteca..."=>"Connecting to library...",
+        "Biblioteca remota conectada."=>"Remote library connected.",
+        "Error al conectar"=>"Could not connect",
+        "Error al cargar catálogo"=>"Could not load catalog",
+        "Error al cargar ficha"=>"Could not load product",
+        "Error al importar"=>"Could not import",
+        "Descargando y verificando archivos autorizados..."=>"Downloading and verifying authorized files...",
+        "Ficha añadida a mi biblioteca."=>"Product added to my library.",
         _=>s,
     }
 }
@@ -506,6 +563,23 @@ mod tests{
         assert_eq!(Language::from_id("en"),Some(Language::English));
         assert_eq!(Language::from_id("xx"),None);
     }
+    #[test]
+    fn shared_library_controls_are_translated() {
+        for (es,en) in [
+            ("Compartir biblioteca","Share library"),
+            ("Conectar a biblioteca","Connect to library"),
+            ("Iniciar compartir biblioteca","Start sharing library"),
+            ("Detener biblioteca compartida","Stop sharing library"),
+            ("Biblioteca remota (solo lectura)","Remote library (read-only)"),
+            ("Añadir ficha sin archivos","Add product without files"),
+            ("Descargar e importar seleccionados","Download and import selected"),
+            ("Por defecto, ningún archivo se puede descargar.","No files can be downloaded by default."),
+        ] {
+            assert_eq!(translate(Language::Spanish,es),es);
+            assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
     #[test]
     fn transfer_ui_is_translated_in_english_and_spanish() {
         for (spanish,english) in [
