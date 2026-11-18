@@ -19,6 +19,9 @@ use crate::{i18n::tr,theme::colors,ui_support::{
 }};
 
 const MAX_SELECTION:usize=2_000;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PublishMode {Exclude,Include}
+
 struct CoverReady {
     id:u64,
     image:Option<egui::ColorImage>,
@@ -55,7 +58,11 @@ pub struct LibraryUi {
     host_products:Vec<Asset>,
     host_avatar_options:Vec<String>,
     host_load_rx:Option<Receiver<Result<Vec<Asset>,String>>>,
-    host_selection:ShareSelection,
+    host_included:BTreeSet<i64>,
+    host_excluded:BTreeSet<i64>,
+    host_mode:PublishMode,
+    host_publish_nsfw:bool,
+    host_loaded:bool,
     pub picker_open:bool,
     pub picker_grid:bool,
     pub host_filter:String,
@@ -101,7 +108,9 @@ impl Default for LibraryUi {
         Self{
             remote_active:false,host_products:Vec::new(),
             host_avatar_options:Vec::new(),host_load_rx:None,
-            host_selection:ShareSelection::default(),picker_open:false,picker_grid:true,
+            host_included:BTreeSet::new(),host_excluded:BTreeSet::new(),
+            host_mode:PublishMode::Exclude,host_publish_nsfw:false,host_loaded:false,
+            picker_open:false,picker_grid:true,
             host_filter:String::new(),host_category:String::new(),
             host_avatar_filter:String::new(),host_files_filter:FileFilter::All,
             host_show_nsfw:false,host_selected_only:false,host_session:None,host_rx:None,
@@ -191,17 +200,59 @@ impl LibraryUi {
             || self.pending_tunnel_consent
     }
     pub fn set_product_share_busy(&mut self,busy:bool){self.product_share_busy=busy;}
-    pub fn selection_count(&self)->usize{self.host_selection.products.len()}
-    pub fn selected(&self,id:i64)->bool{self.host_selection.products.contains(&id)}
+    fn selection(&self)->ShareSelection{
+        ShareSelection{products:self.host_products.iter().filter(|asset|
+            (self.host_publish_nsfw || !asset.nsfw)
+            && match self.host_mode{
+                PublishMode::Exclude=>!self.host_excluded.contains(&asset.id),
+                PublishMode::Include=>self.host_included.contains(&asset.id),
+            }).map(|asset|asset.id).collect()}
+    }
+    pub fn selection_count(&self)->usize{self.selection().products.len()}
+    pub fn selected(&self,id:i64)->bool{
+        let Some(asset)=self.host_products.iter().find(|asset|asset.id==id)
+            else{return false;};
+        (self.host_publish_nsfw || !asset.nsfw)
+            && match self.host_mode{
+                PublishMode::Exclude=>!self.host_excluded.contains(&id),
+                PublishMode::Include=>self.host_included.contains(&id),
+            }
+    }
     pub fn toggle_selected(&mut self,id:i64){
-        if !self.host_selection.products.insert(id){
-            self.host_selection.products.remove(&id);
+        if self.host_products.iter().find(|asset|asset.id==id)
+            .is_none_or(|asset|asset.nsfw && !self.host_publish_nsfw){return;}
+        let set=match self.host_mode{
+            PublishMode::Exclude=>&mut self.host_excluded,
+            PublishMode::Include=>&mut self.host_included,
+        };
+        if !set.insert(id){set.remove(&id);}
+    }
+    pub fn picker_toggle_label(&self,id:i64)->&'static str{
+        match (self.host_mode,self.selected(id)){
+            (PublishMode::Exclude,true)=>"Excluir ficha",
+            (PublishMode::Exclude,false)=>"Volver a incluir",
+            (PublishMode::Include,true)=>"Quitar selección",
+            (PublishMode::Include,false)=>"Seleccionar ficha",
         }
     }
+    pub fn mode_is_exclude(&self)->bool{self.host_mode==PublishMode::Exclude}
+    pub fn mode_options(&mut self,ui:&mut egui::Ui){
+        ui.horizontal_wrapped(|ui|{
+            ui.label(RichText::new(tr("Modo de publicación:"))
+                .color(colors().muted).size(12.5));
+            if ui.selectable_label(self.mode_is_exclude(),tr("Compartir salvo excluidas"))
+                .clicked(){self.host_mode=PublishMode::Exclude;}
+            if ui.selectable_label(!self.mode_is_exclude(),tr("Compartir solo incluidas"))
+                .clicked(){self.host_mode=PublishMode::Include;}
+        });
+    }
+
     pub fn picker_indices(&self)->Vec<usize>{
         let filter=self.host_filter.trim().to_lowercase();
         self.host_products.iter().enumerate().filter(|(_,asset)|{
-            (!self.host_selected_only || self.selected(asset.id))
+            (!self.host_selected_only || if self.mode_is_exclude(){
+                !self.selected(asset.id)
+            }else{self.selected(asset.id)})
             && (self.host_show_nsfw || !asset.nsfw)
             && (self.host_category.is_empty() || self.host_category==asset.category)
             && (self.host_avatar_filter.is_empty() || asset.avatars.split(", ")
@@ -232,7 +283,9 @@ impl LibraryUi {
             .strong().color(colors().accent).size(11.0));
         ui.add_space(8.0);
         let show=self.host_selected_only;
-        if nav_choice(ui,"Solo seleccionadas",show){self.host_selected_only=!show;}
+        if nav_choice(ui,if self.mode_is_exclude(){
+            "Solo excluidas"
+        }else{"Solo seleccionadas"},show){self.host_selected_only=!show;}
         ui.add_space(6.0);
         if nav_sensitive_choice(ui,"Mostrar NSFW",self.host_show_nsfw){
             self.host_show_nsfw=!self.host_show_nsfw;
@@ -421,7 +474,7 @@ impl LibraryUi {
                 .color(colors().accent).size(12.0));
         }
         ui.add_space(9.0);
-        if ui.add_enabled(!self.product_share_busy && !self.host_selection.products.is_empty(),
+        if ui.add_enabled(!self.product_share_busy && self.selection_count()>0,
             egui::Button::new(tr("Iniciar compartir biblioteca"))
                 .fill(colors().primary).min_size(egui::vec2(220.0,36.0))).clicked(){
             self.request_start(db_path,data_dir);
@@ -433,7 +486,7 @@ impl LibraryUi {
     }
     fn request_start(&mut self,db_path:&Path,data_dir:&Path){
         if self.product_share_busy || self.host_busy(){return;}
-        if self.host_selection.products.is_empty(){
+        if self.selection_count()==0{
             self.host_status=tr("Selecciona al menos una ficha.").into();
             return;
         }
@@ -449,7 +502,7 @@ impl LibraryUi {
         self.picker_open=false;
         self.host_cancel=Arc::new(AtomicBool::new(false));
         let cancel=Arc::clone(&self.host_cancel);
-        let choice=self.host_selection.clone();
+        let choice=self.selection();
         let db=db_path.to_path_buf();
         let data=data_dir.to_path_buf();
         let internet=self.internet_access;
@@ -486,7 +539,9 @@ impl LibraryUi {
             match answer {
                 Ok(products) if products.len()<=MAX_SELECTION=>{
                     let valid:BTreeSet<_>=products.iter().map(|p|p.id).collect();
-                    self.host_selection.products.retain(|id|valid.contains(id));
+                    self.host_included.retain(|id|valid.contains(id));
+                    self.host_excluded.retain(|id|valid.contains(id));
+                    self.host_loaded=true;
                     let mut avatar_names=BTreeSet::new();
                     for product in &products {
                         for item in product.avatars.split([',',';']){
@@ -498,8 +553,14 @@ impl LibraryUi {
                     self.host_products=products;
                     self.host_status=tr("Selecciona las fichas que deseas publicar.").into();
                 },
-                Ok(_)=>self.host_status=tr("La biblioteca supera el límite de 2000 productos.").into(),
-                Err(err)=>self.host_status=format!("{}: {err}",tr("Error leyendo biblioteca")),
+                Ok(_)=>{
+                    self.host_loaded=true;
+                    self.host_status=tr("La biblioteca supera el límite de 2000 productos.").into();
+                },
+                Err(err)=>{
+                    self.host_loaded=true;
+                    self.host_status=format!("{}: {err}",tr("Error leyendo biblioteca"));
+                },
             }
         }
         if let Some(answer)=poll_result(&mut self.host_rx){
