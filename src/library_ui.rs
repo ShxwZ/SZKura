@@ -1326,6 +1326,19 @@ mod picker_tests {
     }
 
     #[test]
+    fn pending_publication_consent_blocks_concurrent_tunnel_workflows(){
+        let mut ui=LibraryUi::new();
+        assert!(!ui.host_busy());
+        ui.pending_share_confirm=true;
+        assert!(ui.host_busy());
+        ui.pending_share_confirm=false;
+        ui.pending_tunnel_consent=true;
+        assert!(ui.host_busy());
+        ui.stop_share();
+        assert!(!ui.host_busy());
+    }
+
+    #[test]
     fn host_and_remote_are_disabled_at_start(){
         let ui=LibraryUi::new();
         assert!(!ui.host_busy());
