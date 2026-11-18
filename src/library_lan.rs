@@ -705,15 +705,15 @@ fn download_file(conn:&RemoteConnection,file:&RemoteFile,dest:&Path,cancel:&Atom
 /// Validate downloaded containers before changing the destination library.
 fn archive_entry_count(path:&Path)->Result<i64>{
     let ext=path.extension().and_then(|ext|ext.to_str()).unwrap_or("");
-    let count=if ext.eq_ignore_ascii_case("zip"){
-        zip::ZipArchive::new(File::open(path)?)
-            .context("ZIP remoto inválido")?.len()
+    let count:i64=if ext.eq_ignore_ascii_case("zip"){
+        i64::try_from(zip::ZipArchive::new(File::open(path)?)
+            .context("ZIP remoto inválido")?.len())?
     }else if ext.eq_ignore_ascii_case("7z"){
         crate::package_inspect::sevenzip_count(path)?
     }else if ext.eq_ignore_ascii_case("rar"){
         crate::package_inspect::rar_count(path)?
     }else{0};
-    Ok(i64::try_from(count)?)
+    Ok(count)
 }
 
 /// Verify registered local content before trusting the SQLite cache. Never
