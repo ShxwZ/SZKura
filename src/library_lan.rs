@@ -969,4 +969,116 @@ mod tests {
         assert_eq!(Catalog::open(&host).unwrap().count().unwrap(),1);
     }
 
+    fn valid_zip(path:&Path,body:&[u8]){
+        use std::io::Write;
+        let target=File::create(path).unwrap();
+        let mut zip=zip::ZipWriter::new(target);
+        zip.start_file("Assets/costume.txt",zip::write::FileOptions::default()).unwrap();
+        zip.write_all(body).unwrap();
+        zip.finish().unwrap();
+    }
+    fn attach(db:&mut Catalog,asset_id:i64,path:&Path,name:&str){
+        use crate::db::{NewAttachment,ArchiveMode};
+        let bytes=fs::read(path).unwrap();
+        let hash=blake3::hash(&bytes).to_hex().to_string();
+        db.add_attachment(&NewAttachment{
+            asset_id,name,path:&path.to_string_lossy(),checksum:&hash,
+            bytes:bytes.len() as i64,count:1,mode:ArchiveMode::Reference,
+        }).unwrap();
+    }
+    #[test]
+    fn remote_import_round_trip_detects_existing_files_and_new_versions(){
+        let temp=tempfile::tempdir().unwrap();
+        let host_db=temp.path().join("host.sqlite");
+        let client_db=temp.path().join("client.sqlite");
+        let root=temp.path().join("my-assets");
+        let covers=temp.path().join("my-covers");
+        let v1=temp.path().join("v1.zip");
+        let v2=temp.path().join("v2.zip");
+        valid_zip(&v1,b"version-1");
+        valid_zip(&v2,b"version-2");
+        let mut host=Catalog::open(&host_db).unwrap();
+        let id=host.create_product("Costume","Ropa").unwrap();
+        attach(&mut host,id,&v1,"costume.zip");
+        let mut own=Catalog::open(&client_db).unwrap();
+        own.configure_storage(&root).unwrap();
+        drop(own);
+        let mut selection=ShareSelection::default();
+        selection.products.insert(id);
+        let first=start_library(&host_db,&selection,temp.path(),false,
+            "Colección", &AtomicBool::new(false)).unwrap();
+        let connection=connect(&first.invitation).unwrap();
+        let remote=get_asset(&connection,1).unwrap();
+        let first_key=remote.origin_key.clone();
+        let done=import_asset(&connection,1,&client_db,&root,&covers,
+            &AtomicBool::new(false)).unwrap();
+        assert!(done.is_new);
+        assert_eq!(done.new_files,1);
+        let same=import_asset(&connection,1,&client_db,&root,&covers,
+            &AtomicBool::new(false)).unwrap();
+        assert_eq!(same.asset_id,done.asset_id);
+        assert_eq!(same.new_files,0);
+        let mut client=Catalog::open(&client_db).unwrap();
+        client.update_details(done.asset_id,"Mi título manual","Ropa","", "", "").unwrap();
+        let old_bytes=fs::read(&client.attachments_for(done.asset_id).unwrap()[0].stored_path)
+            .unwrap();
+        let old_hash=blake3::hash(&old_bytes);
+        drop(client);
+        first.stop();
+        drop(first);
+        let old=host.attachments_for(id).unwrap()[0].id;
+        host.detach(old,id).unwrap();
+        attach(&mut host,id,&v2,"costume.zip");
+        drop(host);
+        let next=start_library(&host_db,&selection,temp.path(),false,
+            "Colección", &AtomicBool::new(false)).unwrap();
+        let connection2=connect(&next.invitation).unwrap();
+        let latest=get_asset(&connection2,1).unwrap();
+        assert_eq!(latest.origin_key,first_key);
+        let pending=verified_local_state(&client_db,&latest).unwrap();
+        assert_eq!(pending,RemoteLocalState::NeedsUpdate(1));
+        let update=import_asset(&connection2,1,&client_db,&root,&covers,
+            &AtomicBool::new(false)).unwrap();
+        assert_eq!(update.asset_id,done.asset_id);
+        assert_eq!(update.new_files,1);
+        assert!(!update.is_new);
+        let client=Catalog::open(&client_db).unwrap();
+        assert_eq!(client.get(done.asset_id).unwrap().unwrap().title,"Mi título manual");
+        let local_files=client.attachments_for(done.asset_id).unwrap();
+        assert_eq!(local_files.len(),2);
+        assert!(local_files.iter().any(|file|
+            file.checksum==old_hash.to_hex().to_string()));
+        assert_eq!(verified_local_state(&client_db,&latest).unwrap(),
+            RemoteLocalState::Complete);
+    }
+    #[test]
+    fn invalid_second_remote_archive_never_creates_partial_product(){
+        let temp=tempfile::tempdir().unwrap();
+        let host_db=temp.path().join("host.sqlite");
+        let client_db=temp.path().join("client.sqlite");
+        let root=temp.path().join("assets");
+        let covers=temp.path().join("covers");
+        let first=temp.path().join("first.zip");
+        let bad=temp.path().join("bad.zip");
+        valid_zip(&first,b"ok");
+        fs::write(&bad,b"not a ZIP").unwrap();
+        let mut host=Catalog::open(&host_db).unwrap();
+        let id=host.create_product("Remote","Ropa").unwrap();
+        attach(&mut host,id,&first,"first.zip");
+        attach(&mut host,id,&bad,"bad.zip");
+        drop(host);
+        let mut own=Catalog::open(&client_db).unwrap();
+        own.configure_storage(&root).unwrap();
+        drop(own);
+        let mut selection=ShareSelection::default();
+        selection.products.insert(id);
+        let server=start_library(&host_db,&selection,temp.path(),false,
+            "Test",&AtomicBool::new(false)).unwrap();
+        let connection=connect(&server.invitation).unwrap();
+        assert!(import_asset(&connection,1,&client_db,&root,&covers,
+            &AtomicBool::new(false)).is_err());
+        let client=Catalog::open(&client_db).unwrap();
+        assert_eq!(client.count().unwrap(),0);
+    }
+
 }
