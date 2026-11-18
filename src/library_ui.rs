@@ -261,6 +261,80 @@ impl LibraryUi {
             self.host_show_nsfw=false;self.host_selected_only=false;
         }
     }
+    pub fn is_loading_products(&self)->bool{self.host_load_rx.is_some()}
+    pub fn reset_picker_filters(&mut self){
+        self.host_filter.clear();self.host_category.clear();
+        self.host_avatar_filter.clear();self.host_files_filter=FileFilter::All;
+        self.host_show_nsfw=false;self.host_selected_only=false;
+    }
+    pub fn remote_catalog_open(&self)->bool{
+        self.remote_active && self.connection.is_some() && self.detail.is_none()
+    }
+    pub fn remote_search(&mut self,ui:&mut egui::Ui){
+        icon(ui,Icon::Search,colors().muted,19.0);
+        ui.add_sized([ui.available_width().min(610.0).max(180.0),36.0],
+            egui::TextEdit::singleline(&mut self.search)
+                .hint_text(tr("Buscar productos, tiendas y etiquetas...")));
+        if !self.search.is_empty() && ui.button(tr("Limpiar")).clicked(){
+            self.search.clear();
+        }
+    }
+    pub fn remote_sidebar(&mut self,ui:&mut egui::Ui){
+        ui.label(RichText::new(tr("BIBLIOTECA REMOTA"))
+            .color(colors().accent).strong().size(11.0));
+        ui.add_space(9.0);
+        if nav_choice(ui,"Volver a mi biblioteca",false){self.leave_remote();return;}
+        if self.connection.is_none(){return;}
+        ui.add_space(12.0);
+        if nav_choice(ui,"Todos los productos",self.category.is_empty()){
+            self.category.clear();
+        }
+        ui.add_space(9.0);
+        ui.label(RichText::new(tr("CONTENIDO")).color(colors().accent).strong().size(11.0));
+        if nav_sensitive_choice(ui,"Mostrar NSFW",self.show_nsfw){
+            self.show_nsfw=!self.show_nsfw;
+        }
+        for &category in CATEGORIES{
+            if nav_choice(ui,category,self.category==category){
+                self.category=category.into();
+            }
+        }
+        ui.add_space(12.0);ui.separator();ui.add_space(8.0);
+        ui.label(RichText::new(tr("AVATAR COMPATIBLE"))
+            .color(colors().accent).strong().size(11.0));
+        let displayed=if self.avatar_filter.is_empty(){
+            tr("Todos los avatares")
+        }else{&self.avatar_filter};
+        egui::ComboBox::from_id_salt("remote-filter-avatar").width(184.0)
+            .selected_text(displayed).show_ui(ui,|ui|{
+                ui.selectable_value(&mut self.avatar_filter,String::new(),
+                    tr("Todos los avatares"));
+                if let Some(connection)=&self.connection{
+                    for name in &connection.info.avatars{
+                        ui.selectable_value(&mut self.avatar_filter,name.clone(),name);
+                    }
+                }
+            });
+        ui.add_space(12.0);ui.separator();ui.add_space(8.0);
+        ui.label(RichText::new(tr("ARCHIVOS"))
+            .color(colors().accent).strong().size(11.0));
+        if nav_choice(ui,"Todos",self.files_filter==FileFilter::All){
+            self.files_filter=FileFilter::All;
+        }
+        if nav_choice(ui,"Con archivos",self.files_filter==FileFilter::WithFiles){
+            self.files_filter=FileFilter::WithFiles;
+        }
+        if nav_choice(ui,"Sin archivos",self.files_filter==FileFilter::WithoutFiles){
+            self.files_filter=FileFilter::WithoutFiles;
+        }
+        ui.add_space(12.0);
+        if nav_choice(ui,"Limpiar filtros",false){
+            self.search.clear();self.category.clear();
+            self.avatar_filter.clear();self.files_filter=FileFilter::All;
+            self.show_nsfw=false;
+        }
+    }
+
     pub fn settings_ui(&mut self,ui:&mut egui::Ui,db_path:&Path,data_dir:&Path){
         ui.label(RichText::new(tr("Compartir biblioteca"))
             .size(17.0).strong().color(colors().text));
@@ -479,12 +553,15 @@ impl LibraryUi {
         }
         if self.remote_active && self.connection.is_some() && self.detail.is_none()
             && self.browse_rx.is_none() {
-            if let Some((previous_search,previous_cat,previous_avatar,_))=&self.browse_parameters {
+            if let Some((previous_search,previous_cat,previous_avatar,previous_files,
+                previous_nsfw,_))=&self.browse_parameters {
                 if previous_search!=&self.search || previous_cat!=&self.category
-                    || previous_avatar!=&self.avatar_filter {self.offset=0;}
+                    || previous_avatar!=&self.avatar_filter
+                    || previous_files!=&self.files_filter
+                    || previous_nsfw!=&self.show_nsfw {self.offset=0;}
             }
             let request=(self.search.clone(),self.category.clone(),
-                self.avatar_filter.clone(),self.offset);
+                self.avatar_filter.clone(),self.files_filter,self.show_nsfw,self.offset);
             if self.browse_parameters.as_ref()!=Some(&request){
                 self.request_browse();
             }
@@ -517,12 +594,13 @@ impl LibraryUi {
         if self.browse_rx.is_some(){return;}
         let Some(connection)=self.connection.clone() else{return;};
         let params=(self.search.clone(),self.category.clone(),
-            self.avatar_filter.clone(),self.offset);
+            self.avatar_filter.clone(),self.files_filter,self.show_nsfw,self.offset);
         self.browse_parameters=Some(params.clone());
         let (tx,rx)=mpsc::channel();
         self.browse_rx=Some(rx);
         thread::spawn(move||{
-            let result=library_lan::browse(&connection,&params.0,&params.1,&params.2,params.3)
+            let result=library_lan::browse(&connection,&params.0,&params.1,&params.2,
+                params.3,params.4,params.5)
                 .map_err(|err|format!("{err:#}"));
             let _=tx.send(result);
         });
