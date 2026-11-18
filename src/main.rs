@@ -899,8 +899,13 @@ impl BoothApp {
                 });
                 self.sharing.active_header(ui);
                 self.library_ui.active_header(ui);
-                if !self.show_settings && self.selected.is_none() && !self.new_dialog
-                     && !self.library_ui.remote_active {
+                if self.library_ui.picker_open {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui|self.library_ui.picker_search(ui));
+                }else if self.library_ui.remote_active && self.library_ui.remote_catalog_open(){
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui|self.library_ui.remote_search(ui));
+                }else if !self.show_settings && self.selected.is_none() && !self.new_dialog {
                     ui.add_space(10.0);
                     ui.horizontal(|ui|{
                         icon(ui,Icon::Search,colors().muted,19.0);
@@ -926,22 +931,15 @@ impl BoothApp {
                 egui::ScrollArea::vertical().id_salt("nav-scroll")
                     .auto_shrink([false,false]).show(ui,|ui|{
                         ui.spacing_mut().item_spacing.y=5.0;
+                        if self.library_ui.picker_open {
+                            self.library_ui.picker_sidebar(ui);
+                            return;
+                        }
                         if self.library_ui.remote_active {
-                            ui.label(RichText::new(tr("BIBLIOTECA REMOTA"))
-                                .strong().color(colors().accent).size(11.0));
-                            ui.add_space(12.0);
-                            if nav_choice(ui,"Volver a mi biblioteca",false){
-                                self.library_ui.leave_remote();
-                            }
+                            self.library_ui.remote_sidebar(ui);
                             return;
                         }
                         ui.label(RichText::new(tr("BIBLIOTECA")).color(colors().accent).strong().size(11.0));
-                        ui.add_space(7.0);
-                        if nav_choice(ui,"Conectar a biblioteca",false) {
-                            self.library_ui.open_connect();
-                            self.selected=None;
-                            self.new_dialog=false;
-                        }
                         ui.add_space(9.0);
                         if self.category_button(ui,"Todos los productos",""){
                             self.category.clear();self.selected=None;self.new_dialog=false;
@@ -1010,6 +1008,16 @@ impl BoothApp {
                             self.selected=None;self.new_dialog=false;
                         }
                         ui.add_space(14.0);
+                        ui.separator();ui.add_space(8.0);
+                        ui.label(RichText::new(tr("BIBLIOTECAS REMOTAS"))
+                            .color(colors().accent).strong().size(11.0));
+                        ui.add_space(4.0);
+                        if nav_choice(ui,"Conectar a biblioteca",false) {
+                            self.library_ui.open_connect();
+                            self.selected=None;
+                            self.new_dialog=false;
+                        }
+                        ui.add_space(13.0);
                         ui.separator();ui.add_space(8.0);
                         ui.label(RichText::new(tr("IMPORTACIÓN")).color(colors().accent).strong().size(11.0));
                         ui.label(RichText::new(tr("Arrastra archivos ZIP, 7z, RAR, UnityPackage o carpetas para vincularlos."))
@@ -1762,6 +1770,156 @@ impl BoothApp {
                 }
             });
     }
+    /// Reuses the normal catalog's cards, cover decoding and responsive
+    /// virtualized grid; only the contextual action changes to Select.
+    fn library_picker_page(&mut self,ctx:&egui::Context){
+        let indexes=self.library_ui.picker_indices();
+        let count=indexes.len();
+        egui::CentralPanel::default().frame(egui::Frame::new()
+            .fill(colors().bg).inner_margin(egui::Margin::symmetric(19,17)))
+            .show(ctx,|ui|{
+                ui.horizontal_wrapped(|ui|{
+                    if action(ui,Icon::Back,"Volver a configuración",false){
+                        self.library_ui.picker_open=false;
+                    }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(tr("Elegir fichas para compartir"))
+                        .strong().size(23.0).color(colors().text));
+                    ui.label(RichText::new(format!("{} {} · {} {}",
+                        count,tr("productos"),self.library_ui.selection_count(),
+                        tr("seleccionadas"))).color(colors().accent).size(13.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                        if ui.selectable_label(!self.library_ui.picker_grid,tr("Lista")).clicked(){
+                            self.library_ui.picker_grid=false;
+                        }
+                        if ui.selectable_label(self.library_ui.picker_grid,tr("Cuadrícula")).clicked(){
+                            self.library_ui.picker_grid=true;
+                        }
+                    });
+                });
+                ui.label(RichText::new(tr(
+                    "Marca las fichas completas; se compartirán con todos sus adjuntos. Los productos sin marcar no serán visibles."))
+                    .size(12.5).color(colors().muted));
+                ui.add_space(12.0);
+                if count==0 {
+                    ui.vertical_centered(|ui|{
+                        ui.add_space(35.0);
+                        if self.library_ui.is_loading_products(){
+                            ui.spinner();
+                            ui.label(tr("Cargando selección de productos..."));
+                        }else{
+                            ui.label(RichText::new(tr("No hay resultados")).size(18.0));
+                            if ui.button(tr("Limpiar filtros")).clicked(){
+                                self.library_ui.reset_picker_filters();
+                            }
+                        }
+                    });
+                    return;
+                }
+                if !self.library_ui.picker_grid {
+                    let compact=ui.available_width()<1020.0;
+                    let height=if compact{136.0}else{96.0};
+                    egui::ScrollArea::vertical().id_salt("share-picker-rows")
+                        .show_rows(ui,height,indexes.len(),|ui,range|{
+                        for index in range{
+                            let Some(asset)=self.library_ui.picker_asset(indexes[index]).cloned()
+                                else{continue};
+                            let chosen=self.library_ui.selected(asset.id);
+                            egui::Frame::new().fill(colors().card).corner_radius(8)
+                                .stroke(egui::Stroke::new(if chosen{2.0}else{1.0},
+                                    if chosen{colors().accent}else{colors().stroke}))
+                                .inner_margin(egui::Margin::symmetric(12,8))
+                                .show(ui,|ui|{
+                                    ui.horizontal(|ui|{
+                                        self.draw_cover(ui,ctx,&asset.image_path,76.0,64.0,160);
+                                        ui.add_space(10.0);
+                                        ui.vertical(|ui|{
+                                            ui.label(RichText::new(&asset.title)
+                                                .strong().size(15.0).color(colors().text));
+                                            ui.label(RichText::new(format!("{} · {}",
+                                                asset.creator,tr(&asset.category)))
+                                                .size(11.5).color(colors().muted));
+                                            if !asset.avatars.is_empty(){
+                                                ui.label(RichText::new(&asset.avatars)
+                                                    .size(11.5).color(colors().accent));
+                                            }
+                                        });
+                                        ui.with_layout(egui::Layout::right_to_left(
+                                            egui::Align::Center),|ui|{
+                                            if ui.button(tr(if chosen{
+                                                "Quitar selección"
+                                            }else{"Seleccionar ficha"})).clicked(){
+                                                self.library_ui.toggle_selected(asset.id);
+                                            }
+                                        });
+                                    });
+                                });
+                        }
+                    });
+                    return;
+                }
+                let space=ui.available_width().max(210.0);
+                let gap=ui.spacing().item_spacing.x;
+                let columns=(((space+gap)/(325.0+gap)).floor() as usize).max(1);
+                let width=((space-gap*(columns-1) as f32)/columns as f32).max(200.0);
+                let rows=count.div_ceil(columns);
+                egui::ScrollArea::vertical().id_salt("share-picker-grid")
+                    .show_rows(ui,330.0,rows,|ui,range|{
+                        for row_index in range {
+                            let first=row_index*columns;
+                            let last=(first+columns).min(count);
+                            let visible:Vec<_>=indexes[first..last].iter()
+                                .filter_map(|i|self.library_ui.picker_asset(*i).cloned()).collect();
+                            ui.horizontal_top(|ui|{
+                                for asset in visible {
+                                    let chosen=self.library_ui.selected(asset.id);
+                                    ui.allocate_ui_with_layout(egui::vec2(width,330.0),
+                                        egui::Layout::top_down(egui::Align::Min),|ui|{
+                                        ui.set_width(width);
+                                        egui::Frame::new().fill(colors().card)
+                                            .stroke(egui::Stroke::new(
+                                                if chosen{2.0}else{1.0},
+                                                if chosen{colors().accent}else{colors().stroke}))
+                                            .corner_radius(12).inner_margin(13).show(ui,|ui|{
+                                                let inner=width-26.0;
+                                                ui.set_width(inner);
+                                                ui.set_min_height(302.0);
+                                                self.draw_cover(ui,ctx,&asset.image_path,inner,170.0,320);
+                                                ui.add_space(9.0);
+                                                ui.add(egui::Label::new(RichText::new(&asset.title)
+                                                    .strong().color(colors().text).size(16.0))
+                                                    .truncate()).on_hover_text(&asset.title);
+                                                ui.label(RichText::new(if asset.creator.is_empty(){
+                                                    tr(&asset.category).to_owned()
+                                                }else{asset.creator.clone()})
+                                                    .size(12.5).color(colors().muted));
+                                                if let Some(label)=avatar_summary(&asset.avatars){
+                                                    ui.label(RichText::new(label)
+                                                        .size(12.0).color(colors().accent));
+                                                }else{ui.add_space(18.0);}
+                                                ui.add_space(6.0);
+                                                ui.horizontal(|ui|{
+                                                    ui.label(RichText::new(format!("{} · {}",
+                                                        asset.attachments,human_size(asset.total_bytes)))
+                                                        .size(12.0).color(colors().muted));
+                                                    ui.with_layout(egui::Layout::right_to_left(
+                                                        egui::Align::Center),|ui|{
+                                                        if ui.button(tr(if chosen{
+                                                            "Quitar selección"
+                                                        }else{"Seleccionar ficha"})).clicked(){
+                                                            self.library_ui.toggle_selected(asset.id);
+                                                        }
+                                                    });
+                                                });
+                                            });
+                                    });
+                                }
+                            });
+                        }
+                    });
+            });
+    }
+
     /// Same inline layout and fields as the editor. Never creates a floating popup.
     fn settings_page(&mut self,ctx:&egui::Context) {
         let mut choose=false;
@@ -1894,7 +2052,8 @@ impl BoothApp {
                 ui.label(RichText::new(tr("Antes de importar, SZKura guarda automáticamente una copia de recuperación de tu SQLite actual.")
                 ).color(colors().muted).size(11.5));
                 ui.add_space(18.0);ui.separator();ui.add_space(8.0);
-                self.library_ui.settings_ui(ui,&self.db,&self.paths.db);
+                self.library_ui.settings_ui(ui,&self.paths.db,
+                    self.paths.db.parent().unwrap_or(Path::new(".")));
                 ui.add_space(18.0);ui.separator();ui.add_space(8.0);
                 self.sharing.settings_ui(ui,&mut self.db,
                     self.paths.db.parent().unwrap_or(Path::new(".")));
@@ -2242,6 +2401,8 @@ impl eframe::App for BoothApp {
     fn update(&mut self,ctx:&egui::Context,_frame:&mut eframe::Frame) {
         self.poll_updates(ctx);
         self.process_finished(ctx);
+        self.library_ui.set_product_share_busy(self.sharing.product_share_busy());
+        self.sharing.set_library_share_busy(self.library_ui.host_busy());
         if let Some(result)=self.sharing.poll(ctx) {
             match result {
                 Ok(id)=>{let _=self.reload();self.select_id(id);
@@ -2269,7 +2430,9 @@ impl eframe::App for BoothApp {
             self.handle_dropped_files(ctx);
         }
         self.header(ctx);
-        if self.configured && !self.show_settings {self.sidebar(ctx);}
+        if self.configured && (!self.show_settings || self.library_ui.picker_open){
+            self.sidebar(ctx);
+        }
         // Apply sidebar visibility changes before painting the catalog:
         // unchecking NSFW must not leave hidden products visible for one frame.
         if (self.query.clone(),self.category.clone(),self.avatar_filter.clone(),
@@ -2289,7 +2452,8 @@ impl eframe::App for BoothApp {
                     .on_hover_text(visible_status.to_string());
             });
         // Exactly one CentralPanel, replacing the old floating create/edit windows.
-        if !self.configured || self.show_settings {self.settings_page(ctx);}
+        if self.library_ui.picker_open {self.library_picker_page(ctx);}
+        else if !self.configured || self.show_settings {self.settings_page(ctx);}
         else if self.library_ui.remote_active {
             self.library_ui.page(ctx,&self.paths.db,&self.paths.library,&self.paths.covers);
         }
@@ -2302,6 +2466,8 @@ impl eframe::App for BoothApp {
         self.confirm_restore_dialog(ctx);
         self.sharing.render(ctx,self.paths.db.parent().unwrap_or(Path::new(".")),
             &self.paths.db,&self.paths.library,&self.paths.covers);
+        self.library_ui.render_consent(ctx,&self.paths.db,
+            self.paths.db.parent().unwrap_or(Path::new(".")));
         if let Some(id)=self.sharing.take_navigation() {
             // Navigate through the existing product selector so the editor
             // loads the correct details, cover and attachment state.
