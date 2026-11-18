@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, UdpSocket},
     path::{Path, PathBuf},
     sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}},
@@ -237,6 +237,21 @@ fn selected_lan_ip() -> Ipv4Addr {
 fn header(name:&str,value:&str)->Header {
     Header::from_bytes(name.as_bytes(),value.as_bytes()).expect("Constante HTTP válida")
 }
+
+/// Stop already-open file responses too, not only future HTTP requests.
+/// The worker checks this flag before every streaming chunk.
+struct RevocableReader {
+    file:File,
+    stop:Arc<AtomicBool>,
+}
+impl Read for RevocableReader {
+    fn read(&mut self, bytes:&mut [u8])->io::Result<usize>{
+        if self.stop.load(Ordering::Relaxed){
+            return Err(io::Error::new(io::ErrorKind::Interrupted,"La sesión ha terminado"));
+        }
+        self.file.read(bytes)
+    }
+}
 fn safe_json<T:Serialize>(data:&T)->Response<std::io::Cursor<Vec<u8>>> {
     let encoded=serde_json::to_vec(data).unwrap_or_default();
     Response::from_data(encoded)
@@ -274,7 +289,8 @@ fn filtered_assets(snapshot:&Snapshot, params:&HashMap<String,String>)->RemotePa
         items:filtered.into_iter().skip(offset).take(limit).map(RemoteSummary::from).collect(),
     }
 }
-fn handle_request(request:Request,snapshot:&Snapshot,prefix:&str,key:&str,stop:&AtomicBool) {
+fn handle_request(request:Request,snapshot:&Snapshot,prefix:&str,key:&str,
+    stop:Arc<AtomicBool>) {
     let uri=request.url().to_owned();
     if uri.len()>4_096 || stop.load(Ordering::Relaxed)
         || unauthorized(&request,key,prefix) {
@@ -307,7 +323,10 @@ fn handle_request(request:Request,snapshot:&Snapshot,prefix:&str,key:&str,stop:&
                             "png"=>"image/png",
                             _=>"image/webp",
                         };
-                        let _=request.respond(Response::from_file(file)
+                        let size=file.metadata().map(|meta|meta.len()).unwrap_or(0);
+                        let reader=RevocableReader{file,stop:Arc::clone(&stop)};
+                        let _=request.respond(Response::new(StatusCode(200),vec![],reader,
+                            usize::try_from(size).ok(),None)
                             .with_header(header("Content-Type",mime))
                             .with_header(header("Cache-Control","no-store"))
                             .with_header(header("X-Content-Type-Options","nosniff")));
@@ -324,7 +343,9 @@ fn handle_request(request:Request,snapshot:&Snapshot,prefix:&str,key:&str,stop:&
                 match File::open(&selected.path) {
                     Ok(file) if file.metadata().ok().is_some_and(|meta|
                         meta.is_file() && meta.len()==selected.size) => {
-                        let _=request.respond(Response::from_file(file)
+                        let reader=RevocableReader{file,stop:Arc::clone(&stop)};
+                        let _=request.respond(Response::new(StatusCode(200),vec![],reader,
+                            usize::try_from(selected.size).ok(),None)
                             .with_header(header("Content-Type","application/octet-stream"))
                             .with_header(header("Cache-Control","no-store"))
                             .with_header(header("X-Content-Type-Options","nosniff")));
@@ -389,7 +410,7 @@ pub fn start_library(db_path:&Path,selection:&ShareSelection,cancel:&AtomicBool)
             let endpoint=prefix.clone();
             let secret=key.clone();
             thread::spawn(move||{
-                handle_request(request,&published,&endpoint,&secret,&stop);
+                handle_request(request,&published,&endpoint,&secret,stop);
                 current.fetch_sub(1,Ordering::SeqCst);
             });
         }
@@ -630,6 +651,21 @@ pub fn import_asset(conn:&RemoteConnection,id:u64,chosen:&BTreeSet<u64>,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn active_stream_reader_stops_as_soon_as_session_is_revoked() {
+        let tmp=tempfile::tempdir().unwrap();
+        let path=tmp.path().join("file.bin");
+        fs::write(&path,b"abcdef").unwrap();
+        let stop=Arc::new(AtomicBool::new(false));
+        let mut reader=RevocableReader{file:File::open(&path).unwrap(),
+            stop:Arc::clone(&stop)};
+        let mut bytes=[0u8;3];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes,b"abc");
+        stop.store(true,Ordering::Relaxed);
+        assert!(reader.read(&mut bytes).is_err());
+    }
+
     #[test]
     fn selection_is_private_and_off_by_default() {
         let empty=ShareSelection::default();
