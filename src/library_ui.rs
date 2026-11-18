@@ -299,12 +299,7 @@ impl LibraryUi {
                     crate::human_size(library_lan::MAX_TOTAL_BYTES as i64)))
                     .size(11.5).color(colors().muted));
                 if preview.over_limit(){
-                    ui.label(RichText::new(format!("{}: {} {} / {} · {} {} / {}",
-                        tr("Selección supera los límites"),preview.files,tr("archivos"),
-                        library_lan::MAX_FILES,
-                        crate::human_size(preview.bytes.min(i64::MAX as u64) as i64),
-                        tr("de"),
-                        crate::human_size(library_lan::MAX_TOTAL_BYTES as i64)))
+                    ui.label(RichText::new(tr("Selección supera los límites"))
                         .strong().size(12.0).color(colors().accent));
                 }
             });
