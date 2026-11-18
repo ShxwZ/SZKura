@@ -144,17 +144,22 @@ impl LibraryUi {
             .size(12.0).color(colors().muted));
         ui.add_space(8.0);
         if let Some(session)=&self.host_session {
+            // Snapshot avoids borrowing the active session inside UI actions.
+            let invitation=session.invitation.clone();
+            let visible=session.visible;
+            let downloadable=session.downloadable;
             ui.label(RichText::new(format!("{}: {}",
-                tr("Fichas visibles"),session.visible))
+                tr("Fichas visibles"),visible))
                 .color(colors().accent).strong());
             ui.label(RichText::new(format!("{}: {}",
-                tr("Adjuntos descargables"),session.downloadable))
+                tr("Adjuntos descargables"),downloadable))
                 .color(colors().muted));
-            ui.add(egui::TextEdit::singleline(&mut session.invitation.clone())
+            let mut invite_display=invitation.clone();
+            ui.add(egui::TextEdit::singleline(&mut invite_display)
                 .desired_width(ui.available_width()).interactive(false));
             ui.horizontal_wrapped(|ui|{
                 if action(ui,Icon::Link,"Copiar invitación",true){
-                    ui.ctx().copy_text(session.invitation.clone());
+                    ui.ctx().copy_text(invitation.clone());
                 }
                 if action(ui,Icon::Trash,"Detener biblioteca compartida",false){
                     self.stop_share();
@@ -339,11 +344,21 @@ impl LibraryUi {
             }
         }
         if let Some(rx)=&self.cover_rx {
-            while let Ok(cover)=rx.try_recv(){
-                if let Some(image)=cover.image {
-                    let tex=ctx.load_texture(format!("szkura-remote-cover-{}",cover.id),image,
-                        egui::TextureOptions::LINEAR);
-                    self.cover_textures.insert(cover.id,tex);
+            loop {
+                match rx.try_recv() {
+                    Ok(cover)=>{
+                        if let Some(image)=cover.image {
+                            let tex=ctx.load_texture(
+                                format!("szkura-remote-cover-{}",cover.id),image,
+                                egui::TextureOptions::LINEAR);
+                            self.cover_textures.insert(cover.id,tex);
+                        }
+                    },
+                    Err(mpsc::TryRecvError::Empty)=>break,
+                    Err(mpsc::TryRecvError::Disconnected)=>{
+                        self.cover_rx=None;
+                        break;
+                    }
                 }
             }
         }
