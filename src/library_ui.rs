@@ -1603,6 +1603,32 @@ mod picker_tests {
     }
 
     #[test]
+    fn opening_remote_product_requests_manifest_without_waiting_for_disk_hashing(){
+        let temp=tempfile::tempdir().unwrap();
+        let db_path=temp.path().join("host.sqlite");
+        let mut db=Catalog::open(&db_path).unwrap();
+        let product=db.create_product("Remote outfit","Ropa").unwrap();
+        let mut choice=ShareSelection::default();
+        choice.products.insert(product);
+        let session=library_lan::start_library(&db_path,&choice,temp.path(),
+            false,"Testing",&AtomicBool::new(false)).unwrap();
+        let connected=library_lan::connect(&session.invitation).unwrap();
+        let mut ui=LibraryUi::new();
+        ui.connection=Some(connected);
+        ui.local_db_path=Some(temp.path().join("client.sqlite"));
+        ui.fetch_detail(1);
+        assert_eq!(ui.detail_pending_id,Some(1));
+        assert!(ui.detail_rx.is_some(),
+            "Remote manifest should load as a separate background request");
+        assert!(ui.detail_verify_rx.is_none(),
+            "Disk hashing must not be on the critical path for opening a detail");
+        ui.close_detail();
+        assert!(ui.detail_rx.is_none());
+        assert!(ui.detail_pending_id.is_none());
+        session.stop();
+    }
+
+    #[test]
     fn loads_more_than_one_sql_page_for_publication_picker(){
         let dir=tempfile::tempdir().unwrap();
         let path=dir.path().join("catalog.sqlite");
