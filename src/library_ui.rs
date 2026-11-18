@@ -667,187 +667,319 @@ impl LibraryUi {
     }
 
     fn remote_tile(&mut self,ui:&mut egui::Ui,asset:&RemoteSummary,width:f32){
-        egui::Frame::new().fill(colors().card)
-            .stroke(egui::Stroke::new(1.0,colors().stroke)).corner_radius(12)
-            .inner_margin(12).show(ui,|ui|{
-                ui.set_width(width-24.0);
-                self.draw_cover(ui,asset.id,width-24.0,150.0);
-                ui.add(egui::Label::new(
-                    RichText::new(&asset.title).strong().color(colors().text).size(15.0))
-                    .truncate()).on_hover_text(&asset.title);
-                ui.label(RichText::new(format!("{} · {}",asset.creator,tr(&asset.category)))
-                    .size(12.0).color(colors().muted));
-                if !asset.avatars.is_empty(){
-                    ui.label(RichText::new(format!("{}: {}",tr("Avatar"),
-                        asset.avatars.join(", "))).size(11.5).color(colors().accent));
-                }
-                ui.horizontal(|ui|{
-                    ui.label(RichText::new(format!("{} {}",
-                        asset.files,tr("archivos disponibles")))
-                        .color(colors().muted).size(11.5));
-                    if ui.button(tr("Ver ficha")).clicked(){self.fetch_detail(asset.id);}
+        ui.allocate_ui_with_layout(egui::vec2(width,330.0),
+            egui::Layout::top_down(egui::Align::Min),|ui|{
+            ui.set_width(width);
+            egui::Frame::new().fill(colors().card)
+                .stroke(egui::Stroke::new(1.0,colors().stroke))
+                .corner_radius(12).inner_margin(13).show(ui,|ui|{
+                    let inner=width-26.0;
+                    ui.set_width(inner);
+                    ui.set_min_height(302.0);
+                    self.draw_cover(ui,asset.id,inner,170.0);
+                    ui.add_space(9.0);
+                    ui.add(egui::Label::new(RichText::new(&asset.title)
+                        .strong().color(colors().text).size(16.0))
+                        .truncate()).on_hover_text(&asset.title);
+                    ui.add_space(1.0);
+                    ui.add(egui::Label::new(
+                        RichText::new(format!("{}{}",if asset.creator.is_empty(){
+                            tr(&asset.category)
+                        }else{&asset.creator},
+                        if asset.nsfw{" · NSFW"}else{""}))
+                        .color(colors().muted).size(12.5)).truncate());
+                    ui.add_space(4.0);
+                    if let Some(first)=asset.avatars.first(){
+                        ui.label(RichText::new(format!("{} {}{}",
+                            tr("Avatar:"),first,
+                            if asset.avatars.len()>1{
+                                format!(" +{}",asset.avatars.len()-1)
+                            }else{String::new()}))
+                            .size(12.0).color(colors().accent))
+                            .on_hover_text(asset.avatars.join(", "));
+                    }else{ui.add_space(18.0);}
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui|{
+                        ui.label(RichText::new(format!("{} · {}",
+                            asset.files,crate::human_size(asset.total_bytes as i64)))
+                            .size(12.0).color(colors().muted));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                            if action(ui,Icon::File,"Abrir ficha",false){
+                                self.fetch_detail(asset.id);
+                            }
+                        });
+                    });
                 });
+        });
+    }
+    fn remote_row(&mut self,ui:&mut egui::Ui,asset:&RemoteSummary,compact:bool){
+        egui::Frame::new().fill(colors().card).corner_radius(8)
+            .stroke(egui::Stroke::new(1.0,colors().stroke))
+            .inner_margin(egui::Margin::symmetric(12,8)).show(ui,|ui|{
+            ui.horizontal(|ui|{
+                self.draw_cover(ui,asset.id,76.0,64.0);
+                ui.add_space(10.0);
+                ui.vertical(|ui|{
+                    ui.set_width(if compact{
+                        (ui.available_width()-120.0).max(120.0)
+                    }else{(ui.available_width()-300.0).max(150.0)});
+                    ui.add(egui::Label::new(RichText::new(&asset.title)
+                        .strong().size(15.0)).truncate()).on_hover_text(&asset.title);
+                    ui.add(egui::Label::new(RichText::new(format!("{} · {}{}",
+                        asset.creator,tr(&asset.category),
+                        if asset.nsfw{" · NSFW"}else{""}))
+                        .size(11.5).color(colors().muted)).truncate());
+                    if let Some(first)=asset.avatars.first(){
+                        ui.label(RichText::new(format!("{} {}",
+                            tr("Avatar:"),first)).size(11.5).color(colors().accent));
+                    }
+                });
+                if !compact{
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                        if action(ui,Icon::File,"Abrir ficha",false){
+                            self.fetch_detail(asset.id);
+                        }
+                        ui.label(RichText::new(format!("{} · {}",
+                            asset.files,crate::human_size(asset.total_bytes as i64)))
+                            .size(12.0).color(colors().muted));
+                    });
+                }
             });
+            if compact{
+                ui.horizontal(|ui|{
+                    ui.label(RichText::new(format!("{} · {}",
+                        asset.files,crate::human_size(asset.total_bytes as i64)))
+                        .size(12.0).color(colors().muted));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                        if action(ui,Icon::File,"Abrir ficha",false){
+                            self.fetch_detail(asset.id);
+                        }
+                    });
+                });
+            }
+        });
+    }
+    fn detail_view(&mut self,ui:&mut egui::Ui,asset:&RemoteAsset,
+        db_path:&Path,storage:&Path,covers:&Path){
+        ui.horizontal_wrapped(|ui|{
+            if action(ui,Icon::Back,"Volver al catálogo remoto",true){
+                self.detail=None;
+                return;
+            }
+            ui.add_space(8.0);
+            ui.label(RichText::new(&asset.title)
+                .strong().size(23.0).color(colors().text));
+        });
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui|{
+            ui.label(RichText::new(tr("Biblioteca remota (solo lectura)"))
+                .color(colors().accent).size(12.5));
+            if ui.add_enabled(self.import_rx.is_none(),
+                egui::Button::new(tr("Importar a mi biblioteca"))
+                    .min_size(egui::vec2(180.0,36.0))
+                    .fill(colors().primary)).clicked(){
+                let all=asset.files.iter().map(|file|file.id).collect();
+                self.start_import(asset.id,all,db_path,storage,covers);
+            }
+            if !asset.files.is_empty() && ui.add_enabled(self.import_rx.is_none(),
+                egui::Button::new(tr("Solo guardar ficha"))).clicked(){
+                self.start_import(asset.id,BTreeSet::new(),db_path,storage,covers);
+            }
+            if self.import_rx.is_some(){
+                ui.spinner();
+                if ui.button(tr("Cancelar descarga")).clicked(){
+                    self.import_cancel.store(true,Ordering::Relaxed);
+                }
+            }
+        });
+        ui.separator();ui.add_space(12.0);
+        egui::ScrollArea::vertical().id_salt("remote-detail-scroll")
+            .show(ui,|ui|{
+            let wide=ui.available_width()>=940.0;
+            let draw_fields=|ui:&mut egui::Ui|{
+                ui.label(RichText::new(format!("{} · {}",
+                    asset.creator,tr(&asset.category)))
+                    .color(colors().muted).size(13.0));
+                if !asset.booth_url.is_empty(){
+                    ui.hyperlink_to(tr("Abrir producto en BOOTH"),&asset.booth_url);
+                }
+                if !asset.avatars.is_empty(){
+                    ui.label(RichText::new(format!("{}: {}",
+                        tr("Avatares compatibles"),asset.avatars.join(", ")))
+                        .color(colors().accent).size(13.0));
+                }
+                if !asset.tags.is_empty(){
+                    ui.label(RichText::new(format!("{}: {}",
+                        tr("Otras etiquetas"),asset.tags))
+                        .size(12.5).color(colors().muted));
+                }
+                ui.add_space(12.0);
+                if !asset.description.is_empty(){
+                    ui.label(RichText::new(tr("Descripción")).strong().size(17.0));
+                    ui.label(RichText::new(&asset.description)
+                        .size(13.0).color(colors().text));
+                }
+                ui.add_space(15.0);
+                ui.separator();
+                ui.label(RichText::new(tr("Archivos vinculados"))
+                    .strong().size(17.0));
+                if asset.files.is_empty(){
+                    ui.label(RichText::new(tr("Sin archivos"))
+                        .color(colors().muted).size(12.5));
+                }
+                for file in &asset.files{
+                    ui.horizontal_wrapped(|ui|{
+                        icon(ui,Icon::Archive,colors().muted,16.0);
+                        ui.label(RichText::new(&file.name)
+                            .size(12.5).color(colors().text));
+                        ui.label(RichText::new(crate::human_size(file.size as i64))
+                            .size(11.5).color(colors().muted));
+                    });
+                }
+            };
+            if wide{
+                let content=ui.available_width();
+                let image_width=(content*0.4).min(482.0);
+                ui.horizontal_top(|ui|{
+                    self.draw_cover(ui,asset.id,image_width,320.0);
+                    ui.add_space(20.0);
+                    ui.vertical(|ui|{
+                        ui.set_width((content-image_width-20.0).max(230.0));
+                        draw_fields(ui);
+                    });
+                });
+            }else{
+                let width=ui.available_width().min(460.0);
+                self.draw_cover(ui,asset.id,width,260.0);
+                ui.add_space(15.0);
+                draw_fields(ui);
+            }
+        });
     }
 
-    /// Remote page is rendered in the existing single CentralPanel, with no
-    /// editing controls or access to the host's SQLite file.
+    /// Remote pages reuse the local library's visual language and filters.
+    /// No editing, deletion, favorite changes or database writes to the host.
     pub fn page(&mut self,ctx:&egui::Context,db_path:&Path,
         storage:&Path,covers:&Path){
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(colors().bg)
-                .inner_margin(egui::Margin::symmetric(22,17)))
+                .inner_margin(egui::Margin::symmetric(19,17)))
             .show(ctx,|ui|{
-                ui.horizontal_wrapped(|ui|{
+            if self.connection.is_none(){
+                ui.horizontal(|ui|{
                     if action(ui,Icon::Back,"Volver a mi biblioteca",true){
                         self.leave_remote();
                     }
-                    ui.label(RichText::new(tr("Biblioteca remota (solo lectura)"))
-                        .size(22.0).strong().color(colors().text));
+                    ui.label(RichText::new(tr("Conectar a biblioteca"))
+                        .size(23.0).strong().color(colors().text));
                 });
-                ui.separator();
-                if self.connection.is_none(){
-                    ui.label(RichText::new(tr("Pega la invitación de otro SZKura en tu red local."))
-                        .color(colors().muted));
-                    ui.add_sized([ui.available_width().min(680.0),36.0],
-                        egui::TextEdit::singleline(&mut self.invite_input)
-                            .hint_text("http://192.168.1.10:12345/l/...#key=..."));
-                    if ui.add_enabled(self.connect_rx.is_none(),
-                        egui::Button::new(tr("Conectar a biblioteca"))).clicked(){
-                            self.start_connect();
-                    }
-                }else{
-                    let info=self.connection.as_ref().map(|c|c.info.clone()).unwrap();
-                    ui.horizontal_wrapped(|ui|{
-                        ui.label(RichText::new(&info.name).color(colors().accent).strong());
-                        ui.label(RichText::new(format!("{} {}",
-                            info.products,tr("fichas compartidas"))).color(colors().muted));
-                        if ui.button(tr("Desconectar")).clicked(){
-                            self.leave_remote();
+                ui.add_space(14.0);
+                ui.label(RichText::new(tr(
+                    "Introduce la invitación LAN o HTTPS de Cloudflare que compartió el anfitrión."))
+                    .color(colors().muted).size(13.0));
+                ui.add_sized([ui.available_width().min(700.0),36.0],
+                    egui::TextEdit::singleline(&mut self.invite_input)
+                        .hint_text("https://...trycloudflare.com/l/...#key=..."));
+                if ui.add_enabled(self.connect_rx.is_none(),
+                    egui::Button::new(tr("Conectar a biblioteca"))
+                        .min_size(egui::vec2(190.0,36.0))
+                        .fill(colors().primary)).clicked(){
+                    self.start_connect();
+                }
+                if self.connect_rx.is_some(){ui.spinner();}
+            }else if let Some(asset)=self.detail.clone(){
+                self.detail_view(ui,&asset,db_path,storage,covers);
+            }else{
+                let name=self.connection.as_ref().unwrap().info.name.clone();
+                ui.horizontal(|ui|{
+                    ui.label(RichText::new(tr("Biblioteca remota"))
+                        .strong().size(23.0).color(colors().text));
+                    ui.label(RichText::new(&name).size(13.0).color(colors().muted));
+                    ui.label(RichText::new(format!("{} {}",
+                        self.remote_page.total,tr("productos")))
+                        .size(13.0).color(colors().muted));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                        if ui.selectable_label(!self.remote_grid,tr("Lista")).clicked(){
+                            self.remote_grid=false;
+                        }
+                        if ui.selectable_label(self.remote_grid,tr("Cuadrícula")).clicked(){
+                            self.remote_grid=true;
                         }
                     });
-                    if let Some(asset)=self.detail.clone(){
-                        ui.separator();
-                        if ui.button(tr("Volver al catálogo remoto")).clicked(){
-                            self.detail=None;
-                            self.chosen_files.clear();
+                });
+                if !self.avatar_filter.is_empty(){
+                    ui.horizontal(|ui|{
+                        icon(ui,Icon::Filter,colors().accent,15.0);
+                        ui.label(RichText::new(format!("{} {}",
+                            tr("Avatar:"),self.avatar_filter))
+                            .size(13.0).color(colors().accent));
+                        if ui.button(tr("Quitar filtro")).clicked(){
+                            self.avatar_filter.clear();
                         }
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(&asset.title).size(22.0).strong());
-                        ui.label(RichText::new(format!("{} · {}",
-                            asset.creator,tr(&asset.category))).color(colors().muted));
-                        ui.label(RichText::new(format!("{}: {}",
-                            tr("Avatares compatibles"),asset.avatars.join(", ")))
-                            .color(colors().accent));
-                        if !asset.booth_url.is_empty(){
-                            ui.hyperlink_to(tr("Abrir producto en BOOTH"),&asset.booth_url);
-                        }
-                        ui.separator();
-                        egui::ScrollArea::vertical().show(ui,|ui|{
-                            if !asset.description.is_empty(){
-                                ui.label(RichText::new(&asset.description).color(colors().text));
-                            }
-                            ui.add_space(10.0);
-                            ui.label(RichText::new(tr("Adjuntos autorizados para descargar"))
-                                .strong().size(17.0));
-                            if asset.files.is_empty(){
-                                ui.label(tr("El anfitrión no ha ofrecido adjuntos para esta ficha."));
-                            }
-                            for file in &asset.files{
-                                let mut checked=self.chosen_files.contains(&file.id);
-                                if ui.checkbox(&mut checked,format!("{} ({} bytes)",
-                                    file.name,file.size)).changed(){
-                                    if checked {self.chosen_files.insert(file.id);}
-                                    else {self.chosen_files.remove(&file.id);}
-                                }
-                            }
-                            ui.add_space(15.0);
-                            ui.horizontal_wrapped(|ui|{
-                                if ui.add_enabled(self.import_rx.is_none(),
-                                    egui::Button::new(tr("Añadir ficha sin archivos"))
-                                        .fill(colors().primary)).clicked(){
-                                    self.start_import(asset.id,BTreeSet::new(),
-                                        db_path,storage,covers);
-                                }
-                                if ui.add_enabled(self.import_rx.is_none()
-                                    && !self.chosen_files.is_empty(),
-                                    egui::Button::new(tr("Descargar e importar seleccionados")))
-                                    .clicked(){
-                                    self.start_import(asset.id,self.chosen_files.clone(),
-                                        db_path,storage,covers);
-                                }
-                                if self.import_rx.is_some(){
-                                    ui.spinner();
-                                    if ui.button(tr("Cancelar descarga")).clicked(){
-                                        self.import_cancel.store(true,Ordering::Relaxed);
-                                    }
-                                }
-                            });
-                        });
-                    }else{
-                        ui.horizontal_wrapped(|ui|{
-                            ui.add_sized([ui.available_width().min(330.0),36.0],
-                                egui::TextEdit::singleline(&mut self.search)
-                                    .hint_text(tr("Buscar productos...")));
-                            egui::ComboBox::from_id_salt("remote-category")
-                                .selected_text(tr(if self.category.is_empty() {
-                                    "Todas las categorías"
-                                }else{&self.category}))
-                                .show_ui(ui,|ui|{
-                                    if ui.selectable_label(self.category.is_empty(),
-                                        tr("Todas las categorías")).clicked(){
-                                        self.category.clear();self.offset=0;
-                                    }
-                                    for &cat in CATEGORIES {
-                                        if ui.selectable_label(self.category==cat,tr(cat))
-                                            .clicked(){
-                                            self.category=cat.into();self.offset=0;
-                                        }
-                                    }
-                                });
-                            ui.add_sized([165.0,36.0],
-                                egui::TextEdit::singleline(&mut self.avatar_filter)
-                                    .hint_text(tr("Filtrar avatar...")));
-                        });
-                        ui.separator();
-                        if self.browse_rx.is_some() || self.detail_rx.is_some(){
-                            ui.spinner();
-                        }
-                        ui.horizontal(|ui|{
-                            ui.label(format!("{}: {}",tr("Resultados"),self.remote_page.total));
-                            if ui.add_enabled(self.offset>0,
-                                egui::Button::new(tr("Anterior"))).clicked(){
-                                self.offset=self.offset.saturating_sub(32);
-                            }
-                            if ui.add_enabled(self.offset+32<self.remote_page.total,
-                                egui::Button::new(tr("Siguiente"))).clicked(){
-                                self.offset+=32;
-                            }
-                        });
-                        egui::ScrollArea::vertical().show(ui,|ui|{
-                            let space=ui.available_width().max(240.0);
-                            let gap=ui.spacing().item_spacing.x;
-                            let columns=(((space+gap)/(325.0+gap)).floor() as usize).max(1);
-                            let width=((space-gap*(columns-1) as f32)/columns as f32).max(200.0);
-                            for row in self.remote_page.items.clone().chunks(columns){
-                                ui.horizontal_top(|ui|{
-                                    for asset in row {
-                                        ui.allocate_ui_with_layout(egui::vec2(width,305.0),
-                                            egui::Layout::top_down(egui::Align::Min),|ui|{
-                                                self.remote_tile(ui,asset,width);
-                                            });
-                                    }
-                                });
-                            }
-                        });
+                    });
+                }
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui|{
+                    ui.label(RichText::new(format!("{}: {}",tr("Resultados"),
+                        self.remote_page.total))
+                        .color(colors().muted).size(12.5));
+                    if self.browse_rx.is_some(){ui.spinner();}
+                    if ui.add_enabled(self.offset>0,
+                        egui::Button::new(tr("Anterior"))).clicked(){
+                        self.offset=self.offset.saturating_sub(32);
                     }
+                    if ui.add_enabled(self.offset+32<self.remote_page.total,
+                        egui::Button::new(tr("Siguiente"))).clicked(){
+                        self.offset+=32;
+                    }
+                });
+                if self.remote_page.items.is_empty() && self.browse_rx.is_none(){
+                    ui.vertical_centered(|ui|{
+                        ui.add_space(45.0);
+                        ui.label(RichText::new(tr("No hay resultados")).size(20.0));
+                        ui.label(RichText::new(tr(
+                            "Prueba otra categoría, quita el filtro de ZIP o borra la búsqueda."))
+                            .size(13.0).color(colors().muted));
+                    });
+                }else if !self.remote_grid{
+                    let compact=ui.available_width()<1020.0;
+                    let row_height=if compact{136.0}else{96.0};
+                    let assets=self.remote_page.items.clone();
+                    egui::ScrollArea::vertical().id_salt("remote-product-rows")
+                        .show_rows(ui,row_height,assets.len(),|ui,range|{
+                            for index in range{
+                                self.remote_row(ui,&assets[index],compact);
+                            }
+                        });
+                }else{
+                    let space=ui.available_width().max(210.0);
+                    let gap=ui.spacing().item_spacing.x;
+                    let columns=(((space+gap)/(325.0+gap)).floor() as usize).max(1);
+                    let width=((space-gap*(columns-1) as f32)/columns as f32).max(200.0);
+                    let assets=self.remote_page.items.clone();
+                    let rows=assets.len().div_ceil(columns);
+                    egui::ScrollArea::vertical().id_salt("remote-product-grid")
+                        .show_rows(ui,330.0,rows,|ui,range|{
+                            for index in range{
+                                let start=index*columns;
+                                let end=(start+columns).min(assets.len());
+                                ui.horizontal_top(|ui|{
+                                    for item in &assets[start..end]{
+                                        self.remote_tile(ui,item,width);
+                                    }
+                                });
+                            }
+                        });
                 }
-                if !self.status.is_empty(){
-                    ui.add_space(8.0);
-                    ui.add(egui::Label::new(
-                        RichText::new(tr(&self.status)).color(colors().muted).size(12.0))
-                        .truncate()).on_hover_text(tr(&self.status));
-                }
-            });
+            }
+            if !self.status.is_empty(){
+                ui.add_space(7.0);
+                ui.add(egui::Label::new(
+                    RichText::new(tr(&self.status))
+                        .size(12.0).color(colors().muted)).truncate())
+                    .on_hover_text(tr(&self.status));
+            }
+        });
     }
+
 }
