@@ -431,6 +431,8 @@ pub fn translate(language:Language,s:&str)->&str {
         "Ficha completa importada correctamente."=>"Full product imported successfully.",
         "Ficha actualizada; las versiones locales anteriores se conservan."=>"Product updated; previous local versions were preserved.",
         "Explorando biblioteca:"=>"Browsing library:",
+        "Actualizar lista de productos"=>"Refresh product list",
+        "Solo lectura"=>"Read-only",
         "Catálogo ajeno en solo lectura. Importar no modifica la biblioteca anfitriona."=>"A read-only remote catalog. Importing does not modify the host's library.",
         "Los productos se cargan al desplazarse"=>"More products load as you scroll",
         "ESTÁS EN OTRA BIBLIOTECA · SOLO LECTURA"=>"REMOTE LIBRARY · READ ONLY",
