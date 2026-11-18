@@ -534,8 +534,17 @@ impl LibraryUi {
         if let Some(answer)=poll_result(&mut self.browse_rx){
             match answer{
                 Ok(page)=>{
-                    self.remote_page=page;
-                    self.cover_textures.clear();
+                    if self.offset==0 {
+                        self.remote_page=page;
+                        self.cover_textures.clear();
+                    }else{
+                        self.remote_page.total=page.total;
+                        for item in page.items{
+                            if !self.remote_page.items.iter().any(|a|a.id==item.id){
+                                self.remote_page.items.push(item);
+                            }
+                        }
+                    }
                     self.start_covers();
                 },
                 Err(err)=>self.status=format!("{}: {err}",tr("Error al cargar catálogo")),
@@ -607,7 +616,9 @@ impl LibraryUi {
     fn start_covers(&mut self){
         let Some(conn)=self.connection.clone() else{return;};
         let ids:Vec<_>=self.remote_page.items.iter()
-            .filter(|item|item.has_cover).map(|item|item.id).collect();
+            .filter(|item|item.has_cover && !self.cover_textures.contains_key(&item.id))
+            .map(|item|item.id).collect();
+        if ids.is_empty(){self.cover_rx=None;return;}
         let (tx,rx)=mpsc::channel();
         self.cover_rx=Some(rx);
         thread::spawn(move||{
@@ -626,12 +637,18 @@ impl LibraryUi {
         let params=(self.search.clone(),self.category.clone(),
             self.avatar_filter.clone(),self.files_filter,self.show_nsfw,self.offset);
         self.browse_parameters=Some(params.clone());
+        let path=self.local_db_path.clone();
         let (tx,rx)=mpsc::channel();
         self.browse_rx=Some(rx);
         thread::spawn(move||{
-            let result=library_lan::browse(&connection,&params.0,&params.1,&params.2,
-                params.3,params.4,params.5)
-                .map_err(|err|format!("{err:#}"));
+            let result=(||->anyhow::Result<_>{
+                let mut page=library_lan::browse(&connection,&params.0,&params.1,&params.2,
+                    params.3,params.4,params.5)?;
+                if let Some(path)=path{
+                    library_lan::decorate_local_states(&path,&mut page)?;
+                }
+                Ok(page)
+            })().map_err(|err|format!("{err:#}"));
             let _=tx.send(result);
         });
     }
@@ -993,14 +1010,8 @@ impl LibraryUi {
                         self.remote_page.total))
                         .color(colors().muted).size(12.5));
                     if self.browse_rx.is_some(){ui.spinner();}
-                    if ui.add_enabled(self.offset>0,
-                        egui::Button::new(tr("Anterior"))).clicked(){
-                        self.offset=self.offset.saturating_sub(32);
-                    }
-                    if ui.add_enabled(self.offset+32<self.remote_page.total,
-                        egui::Button::new(tr("Siguiente"))).clicked(){
-                        self.offset+=32;
-                    }
+                    ui.label(RichText::new(tr("Los productos se cargan al desplazarse"))
+                        .size(11.5).color(colors().muted));
                 });
                 if self.remote_page.items.is_empty() && self.browse_rx.is_none(){
                     ui.vertical_centered(|ui|{
@@ -1010,35 +1021,45 @@ impl LibraryUi {
                             "Prueba otra categoría, quita el filtro de ZIP o borra la búsqueda."))
                             .size(13.0).color(colors().muted));
                     });
-                }else if !self.remote_grid{
-                    let compact=ui.available_width()<1020.0;
-                    let row_height=if compact{136.0}else{96.0};
-                    let assets=self.remote_page.items.clone();
-                    egui::ScrollArea::vertical().id_salt("remote-product-rows")
-                        .show_rows(ui,row_height,assets.len(),|ui,range|{
-                            for index in range{
-                                self.remote_row(ui,&assets[index],compact);
-                            }
-                        });
                 }else{
-                    let space=ui.available_width().max(210.0);
-                    let gap=ui.spacing().item_spacing.x;
-                    let columns=(((space+gap)/(325.0+gap)).floor() as usize).max(1);
-                    let width=((space-gap*(columns-1) as f32)/columns as f32).max(200.0);
                     let assets=self.remote_page.items.clone();
-                    let rows=assets.len().div_ceil(columns);
-                    egui::ScrollArea::vertical().id_salt("remote-product-grid")
-                        .show_rows(ui,330.0,rows,|ui,range|{
-                            for index in range{
-                                let start=index*columns;
-                                let end=(start+columns).min(assets.len());
-                                ui.horizontal_top(|ui|{
-                                    for item in &assets[start..end]{
-                                        self.remote_tile(ui,item,width);
-                                    }
-                                });
-                            }
-                        });
+                    let output=if !self.remote_grid {
+                        let compact=ui.available_width()<1020.0;
+                        let row_height=if compact{136.0}else{96.0};
+                        egui::ScrollArea::vertical().id_salt("remote-product-rows")
+                            .show_rows(ui,row_height,assets.len(),|ui,range|{
+                                for index in range{
+                                    self.remote_row(ui,&assets[index],compact);
+                                }
+                            })
+                    }else{
+                        let space=ui.available_width().max(210.0);
+                        let gap=ui.spacing().item_spacing.x;
+                        let columns=(((space+gap)/(325.0+gap)).floor() as usize).max(1);
+                        let width=((space-gap*(columns-1) as f32)/columns as f32).max(200.0);
+                        let rows=assets.len().div_ceil(columns);
+                        egui::ScrollArea::vertical().id_salt("remote-product-grid")
+                            .show_rows(ui,330.0,rows,|ui,range|{
+                                for index in range{
+                                    let start=index*columns;
+                                    let end=(start+columns).min(assets.len());
+                                    ui.horizontal_top(|ui|{
+                                        for item in &assets[start..end]{
+                                            self.remote_tile(ui,item,width);
+                                        }
+                                    });
+                                }
+                            })
+                    };
+                    // Hide protocol pagination. Keep exactly the local catalog's
+                    // virtualized scrolling and fetch the next page near its end.
+                    let near_end=output.state.offset.y+output.inner_rect.height()+560.0
+                        >=output.content_size.y;
+                    if near_end && self.browse_rx.is_none()
+                        && self.remote_page.items.len()<self.remote_page.total {
+                        self.offset=self.remote_page.items.len();
+                        self.request_browse();
+                    }
                 }
             }
             if !self.status.is_empty(){
