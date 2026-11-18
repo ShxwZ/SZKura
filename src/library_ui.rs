@@ -155,9 +155,21 @@ impl LibraryUi {
         self.host_load_rx=Some(rx);
         self.host_status=tr("Cargando selección de productos...").into();
         thread::spawn(move||{
-            let result=Catalog::open(&path).and_then(|db|
-                db.list_filtered_visibility("","","",FileFilter::All,false,true,2_001,0))
-                .map_err(|err|format!("{err:#}"));
+            // Catalog::list_filtered_visibility intentionally caps each SQL
+            // page at 500 records; load the publication picker page by page.
+            let result=(||->anyhow::Result<Vec<Asset>>{
+                let db=Catalog::open(&path)?;
+                let mut all=Vec::new();
+                loop {
+                    let page=db.list_filtered_visibility("","","",FileFilter::All,
+                        false,true,500,all.len() as i64)?;
+                    if page.is_empty(){break;}
+                    let length=page.len();
+                    all.extend(page);
+                    if all.len()>MAX_SELECTION || length<500 {break;}
+                }
+                Ok(all)
+            })().map_err(|err|format!("{err:#}"));
             let _=tx.send(result);
         });
     }
