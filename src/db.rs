@@ -783,7 +783,8 @@ impl Catalog {
                     bail!("Portada remota no válida");
                 }
                 let bytes=fs::read(path)?;
-                if bytes.len()>8*1024*1024 {bail!("Portada remota demasiado grande");}
+                // Match the 32 MiB limit used by the host, download and decoder.
+                if bytes.len()>32*1024*1024 {bail!("Portada remota demasiado grande");}
                 fs::create_dir_all(covers_dir)?;
                 let name=format!("remote-{}.{}",blake3::hash(&bytes).to_hex(),extension);
                 let final_cover=covers_dir.join(name);
