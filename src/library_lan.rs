@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn private_lan_api_never_reveals_hidden_products_or_attachments() {
+    fn private_lan_api_never_reveals_unselected_products_or_their_files() {
         use crate::db::{ArchiveMode,NewAttachment};
         let tmp=tempfile::tempdir().unwrap();
         let db_path=tmp.path().join("catalog.sqlite");
@@ -780,12 +780,14 @@ mod tests {
         let visible=db.create_product("VISIBLE_ONLY","Ropa").unwrap();
         let public_path=tmp.path().join("public.zip");
         let secret_path=tmp.path().join("private.zip");
+        let hidden_path=tmp.path().join("hidden_only.zip");
         fs::write(&public_path,b"public content").unwrap();
-        fs::write(&secret_path,b"hidden content").unwrap();
+        fs::write(&secret_path,b"selected product attachment").unwrap();
+        fs::write(&hidden_path,b"unselected product attachment").unwrap();
         for (product,name,path,checksum) in [
             (visible,"public.zip",&public_path,"public_hash"),
             (visible,"private.zip",&secret_path,"private_hash"),
-            (hidden,"private.zip",&secret_path,"secret_hash"),
+            (hidden,"hidden_only.zip",&hidden_path,"secret_hash"),
         ] {
             db.add_attachment(&NewAttachment {
                 asset_id:product,name,path:&path.to_string_lossy(),checksum,
@@ -813,6 +815,7 @@ mod tests {
         let serialized=serde_json::to_string(&manifest).unwrap();
         assert!(serialized.contains("private.zip"));
         assert!(!serialized.contains("HIDDEN_ONLY"));
+        assert!(!serialized.contains("hidden_only.zip"));
         assert!(!serialized.contains(&public_path.to_string_lossy().to_string()));
         assert!(!serialized.contains(&secret_path.to_string_lossy().to_string()));
         let local_id_token=format!("{}/v1/library",receiver.base.as_str());

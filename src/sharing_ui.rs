@@ -658,6 +658,20 @@ mod tests {
     }
 
     #[test]
+    fn library_share_disables_temporary_product_tunnel() {
+        let mut ui=SharingUi::new(true);
+        assert!(ui.can_start_share());
+        ui.set_library_share_busy(true);
+        assert!(!ui.can_start_share());
+        ui.open_share(42,"Should be blocked");
+        assert!(ui.share_target.is_none());
+        ui.set_library_share_busy(false);
+        assert!(ui.can_start_share());
+        ui.open_share(42,"Available again");
+        assert_eq!(ui.share_target,Some(42));
+    }
+
+    #[test]
     fn disabled_feature_has_no_import_or_share_entry_point() {
         let mut ui = SharingUi::new(false);
         ui.open_import();
