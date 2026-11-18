@@ -1298,6 +1298,29 @@ impl LibraryUi {
 mod picker_tests {
     use super::*;
     #[test]
+    fn changing_filters_while_fetching_does_not_leak_stale_results(){
+        let (tx,rx)=mpsc::channel();
+        let mut ui=LibraryUi::new();
+        ui.search="original".into();
+        ui.browse_parameters=Some(("original".into(),String::new(),
+            String::new(),FileFilter::All,false,0));
+        ui.browse_rx=Some(rx);
+        ui.search="nuevo".into();
+        tx.send(Ok(RemotePage{total:1,items:vec![RemoteSummary{
+            id:1,origin_key:"a".repeat(64),booth_url:String::new(),
+            signatures:Vec::new(),title:"No debería aparecer".into(),
+            category:"Ropa".into(),creator:String::new(),tags:String::new(),
+            avatars:Vec::new(),nsfw:false,has_cover:false,files:0,
+            total_bytes:0,local_state:RemoteLocalState::Unknown,
+        }]})).unwrap();
+        let _=ui.poll(&egui::Context::default());
+        assert_eq!(ui.remote_page.total,0);
+        assert!(ui.remote_page.items.is_empty());
+        assert_eq!(ui.offset,0);
+        assert!(ui.browse_parameters.is_none());
+    }
+
+    #[test]
     fn loads_more_than_one_sql_page_for_publication_picker(){
         let dir=tempfile::tempdir().unwrap();
         let path=dir.path().join("catalog.sqlite");
