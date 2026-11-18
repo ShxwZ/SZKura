@@ -821,6 +821,22 @@ impl LibraryUi {
             });
     }
 
+    fn state_label(state:RemoteLocalState)->&'static str{
+        match state{
+            RemoteLocalState::New=>"Nuevo en mi biblioteca",
+            RemoteLocalState::Complete=>"Ya en mi biblioteca",
+            RemoteLocalState::NeedsUpdate(_)=>"Archivos por actualizar",
+            RemoteLocalState::Unknown=>"Comprobando disponibilidad local",
+        }
+    }
+    fn state_badge(ui:&mut egui::Ui,state:RemoteLocalState){
+        let tint=if state==RemoteLocalState::Complete{
+            colors().muted
+        }else{colors().accent};
+        ui.label(RichText::new(tr(Self::state_label(state)))
+            .size(11.5).strong().color(tint));
+    }
+
     fn remote_tile(&mut self,ui:&mut egui::Ui,asset:&RemoteSummary,width:f32){
         ui.allocate_ui_with_layout(egui::vec2(width,330.0),
             egui::Layout::top_down(egui::Align::Min),|ui|{
@@ -853,7 +869,8 @@ impl LibraryUi {
                             .size(12.0).color(colors().accent))
                             .on_hover_text(asset.avatars.join(", "));
                     }else{ui.add_space(18.0);}
-                    ui.add_space(6.0);
+                    ui.add_space(4.0);
+                    Self::state_badge(ui,asset.local_state);
                     ui.horizontal(|ui|{
                         ui.label(RichText::new(format!("{} · {}",
                             asset.files,crate::human_size(asset.total_bytes as i64)))
@@ -888,6 +905,7 @@ impl LibraryUi {
                         ui.label(RichText::new(format!("{} {}",
                             tr("Avatar:"),first)).size(11.5).color(colors().accent));
                     }
+                    Self::state_badge(ui,asset.local_state);
                 });
                 if !compact{
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
@@ -1098,14 +1116,15 @@ impl LibraryUi {
                             .size(13.0).color(colors().muted));
                     });
                 }else{
-                    let assets=self.remote_page.items.clone();
+                    let item_count=self.remote_page.items.len();
                     let output=if !self.remote_grid {
                         let compact=ui.available_width()<1020.0;
                         let row_height=if compact{136.0}else{96.0};
                         egui::ScrollArea::vertical().id_salt("remote-product-rows")
-                            .show_rows(ui,row_height,assets.len(),|ui,range|{
+                            .show_rows(ui,row_height,item_count,|ui,range|{
                                 for index in range{
-                                    self.remote_row(ui,&assets[index],compact);
+                                    let item=self.remote_page.items[index].clone();
+                                    self.remote_row(ui,&item,compact);
                                 }
                             })
                     }else{
@@ -1113,14 +1132,15 @@ impl LibraryUi {
                         let gap=ui.spacing().item_spacing.x;
                         let columns=(((space+gap)/(325.0+gap)).floor() as usize).max(1);
                         let width=((space-gap*(columns-1) as f32)/columns as f32).max(200.0);
-                        let rows=assets.len().div_ceil(columns);
+                        let rows=item_count.div_ceil(columns);
                         egui::ScrollArea::vertical().id_salt("remote-product-grid")
                             .show_rows(ui,330.0,rows,|ui,range|{
                                 for index in range{
                                     let start=index*columns;
-                                    let end=(start+columns).min(assets.len());
+                                    let end=(start+columns).min(item_count);
+                                    let visible=self.remote_page.items[start..end].to_vec();
                                     ui.horizontal_top(|ui|{
-                                        for item in &assets[start..end]{
+                                        for item in &visible{
                                             self.remote_tile(ui,item,width);
                                         }
                                     });
