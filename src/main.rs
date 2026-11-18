@@ -1797,9 +1797,12 @@ impl BoothApp {
                         }
                     });
                 });
-                ui.label(RichText::new(tr(
-                    "Marca las fichas completas; se compartirán con todos sus adjuntos. Los productos sin marcar no serán visibles."))
-                    .size(12.5).color(colors().muted));
+                self.library_ui.mode_options(ui);
+                ui.label(RichText::new(tr(if self.library_ui.mode_is_exclude(){
+                    "Excluir fichas del catálogo compartido. Las demás se incluirán al iniciar la sesión."
+                }else{
+                    "Marca solo las fichas que deseas incluir en el catálogo compartido."
+                })).size(12.5).color(colors().muted));
                 ui.add_space(12.0);
                 if count==0 {
                     ui.vertical_centered(|ui|{
@@ -1846,9 +1849,7 @@ impl BoothApp {
                                         });
                                         ui.with_layout(egui::Layout::right_to_left(
                                             egui::Align::Center),|ui|{
-                                            if ui.button(tr(if chosen{
-                                                "Quitar selección"
-                                            }else{"Seleccionar ficha"})).clicked(){
+                                            if ui.button(tr(self.library_ui.picker_toggle_label(asset.id))).clicked(){
                                                 self.library_ui.toggle_selected(asset.id);
                                             }
                                         });
@@ -1904,9 +1905,7 @@ impl BoothApp {
                                                         .size(12.0).color(colors().muted));
                                                     ui.with_layout(egui::Layout::right_to_left(
                                                         egui::Align::Center),|ui|{
-                                                        if ui.button(tr(if chosen{
-                                                            "Quitar selección"
-                                                        }else{"Seleccionar ficha"})).clicked(){
+                                                        if ui.button(tr(self.library_ui.picker_toggle_label(asset.id))).clicked(){
                                                             self.library_ui.toggle_selected(asset.id);
                                                         }
                                                     });
