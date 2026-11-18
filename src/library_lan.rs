@@ -926,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_only_import_keeps_host_and_existing_local_records_intact() {
+    fn whole_product_without_files_imports_all_available_metadata() {
         let tmp=tempfile::tempdir().unwrap();
         let host=tmp.path().join("host.sqlite");
         let own=tmp.path().join("my-library.sqlite");
@@ -941,8 +941,11 @@ mod tests {
         let conn=connect(&session.invitation).unwrap();
         let destination=tmp.path().join("assets");
         let covers=tmp.path().join("covers");
-        let imported=import_asset(&conn,1,&BTreeSet::new(),&own,&destination,&covers,
-            &AtomicBool::new(false)).unwrap();
+        let mut local_db=Catalog::open(&own).unwrap();
+        local_db.configure_storage(&destination).unwrap();
+        drop(local_db);
+        let imported=import_asset(&conn,1,&own,&destination,&covers,
+            &AtomicBool::new(false)).unwrap().asset_id;
         let ours=Catalog::open(&own).unwrap();
         let saved=ours.get(imported).unwrap().unwrap();
         assert_eq!(saved.title,"Remote product");
