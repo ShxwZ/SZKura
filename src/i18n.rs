@@ -376,6 +376,12 @@ pub fn translate(language:Language,s:&str)->&str {
         "Detener biblioteca compartida"=>"Stop sharing library",
         "Para cambiar los permisos, detén la sesión y vuelve a compartir."=>"To change permissions, stop sharing and start a new session.",
         "Preparando fichas y permisos..."=>"Preparing products and permissions...",
+        "Cargando portada..."=>"Loading cover...",
+        "Portada no disponible"=>"Cover unavailable",
+        "Cargando ficha remota..."=>"Loading remote product...",
+        "Verificando archivos locales en segundo plano..."=>"Checking local files in the background...",
+        "Reintentar portadas"=>"Retry covers",
+        "Error al comprobar archivos locales"=>"Could not check local files",
         "Resumen de publicación"=>"Sharing overview",
         "Límites actuales por sesión"=>"Current session limits",
         "Fichas no compartidas"=>"Products not shared",
@@ -650,6 +656,20 @@ mod tests{
             ("Fichas que se compartirán","Products to be shared"),
             ("ESTÁS EN OTRA BIBLIOTECA · SOLO LECTURA","REMOTE LIBRARY · READ ONLY"),
         ] {
+            assert_eq!(translate(Language::Spanish,es),es);
+            assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
+    #[test]
+    fn remote_cover_and_detail_states_are_translated(){
+        for (es,en) in [
+            ("Cargando portada...","Loading cover..."),
+            ("Portada no disponible","Cover unavailable"),
+            ("Cargando ficha remota...","Loading remote product..."),
+            ("Verificando archivos locales en segundo plano...","Checking local files in the background..."),
+            ("Reintentar portadas","Retry covers"),
+        ]{
             assert_eq!(translate(Language::Spanish,es),es);
             assert_eq!(translate(Language::English,es),en);
         }
