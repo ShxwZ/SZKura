@@ -1835,6 +1835,8 @@ impl BoothApp {
                 }else{
                     "Marca solo las fichas que deseas incluir en el catálogo compartido."
                 })).size(12.5).color(colors().muted));
+                ui.add_space(9.0);
+                self.library_ui.publication_preview_ui(ui);
                 ui.add_space(12.0);
                 if count==0 {
                     ui.vertical_centered(|ui|{
