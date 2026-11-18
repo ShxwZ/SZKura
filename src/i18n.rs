@@ -379,6 +379,7 @@ pub fn translate(language:Language,s:&str)->&str {
         "Resultados"=>"Results",
         "archivos disponibles"=>"available files",
         "Biblioteca compartida activa."=>"Library sharing active.",
+        "Compartiendo biblioteca (fichas)"=>"Sharing library (products)",
         "Selecciona las fichas y los archivos que deseas publicar."=>"Select the products and files to publish.",
         "Selecciona al menos una ficha."=>"Select at least one product.",
         "La biblioteca supera el límite de 2000 productos."=>"The library exceeds the 2,000-product limit.",
