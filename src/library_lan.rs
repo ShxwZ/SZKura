@@ -1,14 +1,13 @@
-//! Manually started, ephemeral LAN library sharing.
+//! Manually started, ephemeral library sharing on LAN or Cloudflare HTTPS.
 //!
-//! The host publishes ONLY an explicit allowlist. Remote IDs are dense,
-//! session-local values; original SQLite IDs, hidden counts, local paths and
-//! unapproved attachment names never appear in responses. This is separate
-//! from the existing single-product HTTPS transfer protocol.
+//! Only published product METADATA is snapshotted at start. Archive bytes are
+//! never read during startup: their previously verified BLAKE3 digests come
+//! from SQLite. Covers and archive streams are loaded only on authorized GETs.
+//! Hidden products, SQLite IDs and filesystem paths never leave the host.
 use anyhow::{anyhow, bail, Context, Result};
 use rand::{rngs::OsRng, RngCore};
 use reqwest::{blocking::Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeSet, HashMap},
     fs::{self, File},
@@ -24,14 +23,14 @@ use url::Url;
 use crate::{booth, db::{Catalog, CATEGORIES, FileFilter, RemoteFileState,
     RemoteImportRecord,RemoteStagedFile,RemoteCommitReport},share_transfer};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 const KEY_HEADER: &str = "X-SZKura-Library-Key";
 const MAX_PRODUCTS: usize = 2_000;
-const MAX_FILES: usize = 512;
-const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-const MAX_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const MAX_FILES: usize = 4_096;
+const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
 const MAX_COVER_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_JSON_BYTES: u64 = 256 * 1024;
+const MAX_JSON_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 4;
 const PAGE_SIZE: usize = 32;
 
@@ -47,7 +46,7 @@ pub struct RemoteFile {
     pub id: u64,
     pub name: String,
     pub size: u64,
-    pub sha256: String,
+    /// BLAKE3 originally computed on import and stored in SQLite.
     pub blake3: String,
 }
 
@@ -141,8 +140,8 @@ pub struct LibraryInfo {
 struct ServedFile {
     path: PathBuf,
     size: u64,
-    sha256: String,
-    blake3:String,
+    /// Host file metadata version when this publication session began.
+    modified:Option<std::time::SystemTime>,
 }
 
 struct Snapshot {
@@ -152,19 +151,19 @@ struct Snapshot {
     files: HashMap<u64, ServedFile>,
 }
 
-fn file_digest(path: &Path, cancel: &AtomicBool) -> Result<(String,String)> {
+/// Used ONLY to verify files that already exist on the receiving computer.
+/// The hosting startup never calls this function on shared attachments.
+fn file_digest(path: &Path, cancel: &AtomicBool) -> Result<String> {
     let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
     let mut native=blake3::Hasher::new();
-    let mut bytes = [0u8; 64 * 1024];
+    let mut bytes = [0u8; 128 * 1024];
     loop {
         if cancel.load(Ordering::Relaxed) { bail!("Operación cancelada"); }
         let count = file.read(&mut bytes)?;
         if count == 0 { break; }
-        hasher.update(&bytes[..count]);
         native.update(&bytes[..count]);
     }
-    Ok((format!("{:x}", hasher.finalize()),native.finalize().to_hex().to_string()))
+    Ok(native.finalize().to_hex().to_string())
 }
 fn approved_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 200 && name != "." && name != ".."
@@ -189,8 +188,10 @@ fn permitted_cover(path: &Path) -> bool {
         && regular_file(path, MAX_COVER_BYTES).is_ok()
 }
 
-/// Snapshot is immutable for the duration of this manual session.
-/// This guarantees visibility and file allowlists cannot accidentally expand.
+/// Immutable, authorization-safe snapshot of SQLite metadata only.
+/// Opening a 50+ GiB library does not open, read or hash archive contents.
+/// On an archive request the host checks metadata, and the receiving client
+/// verifies actual BLAKE3 bytes before committing its all-or-nothing import.
 fn snapshot(db_path:&Path,choice:&ShareSelection,name:&str,cancel:&AtomicBool)
     ->Result<Snapshot>{
     if name.trim().is_empty() || name.len()>80
@@ -223,7 +224,7 @@ fn snapshot(db_path:&Path,choice:&ShareSelection,name:&str,cancel:&AtomicBool)
         if has_cover { covers.insert(id, cover); }
         let mut visible_files=Vec::new();
         for file in db.attachments_for(local_id)? {
-            if files.len()>=MAX_FILES { bail!("Máximo 512 archivos compartidos por sesión"); }
+            if files.len()>=MAX_FILES { bail!("Máximo 4096 archivos compartidos por sesión"); }
             if !approved_name(&file.original_name){
                 bail!("Un adjunto tiene un nombre o extensión no compatible");
             }
@@ -231,16 +232,20 @@ fn snapshot(db_path:&Path,choice:&ShareSelection,name:&str,cancel:&AtomicBool)
             let size=regular_file(&path,MAX_FILE_BYTES)
                 .with_context(||format!("Adjunto no disponible: {}",file.original_name))?;
             total_size=total_size.checked_add(size).context("Tamaño total no válido")?;
-            if total_size>MAX_TOTAL_BYTES { bail!("Máximo 16 GiB de adjuntos"); }
-            let (digest,native)=file_digest(&path,cancel)?;
+            if total_size>MAX_TOTAL_BYTES { bail!("Máximo 256 GiB de adjuntos"); }
+            // The importer already stores BLAKE3 checksums in attachments.
+            // Never trust malformed/legacy checksums or fabricate a digest.
+            if file.checksum.len()!=64
+                || !file.checksum.bytes().all(|c|c.is_ascii_hexdigit()){
+                bail!("El adjunto {} no tiene un BLAKE3 válido en SQLite; vuelve a indexarlo",
+                    file.original_name);
+            }
+            let modified=fs::symlink_metadata(&path)?.modified().ok();
             let public_id=next_file_id;
             next_file_id+=1;
-            files.insert(public_id,ServedFile{
-                path,size,sha256:digest.clone(),blake3:native.clone(),
-            });
+            files.insert(public_id,ServedFile{path,size,modified});
             visible_files.push(RemoteFile{
-                id:public_id,name:file.original_name,size,sha256:digest,
-                blake3:native,
+                id:public_id,name:file.original_name,size,blake3:file.checksum,
             });
         }
         assets.push(RemoteAsset {
@@ -392,7 +397,9 @@ fn handle_request(request:Request,snapshot:&Snapshot,prefix:&str,key:&str,
     }else if let Some(id)=suffix.strip_prefix("/v1/files/")
         .and_then(|value|value.parse::<u64>().ok()) {
         match snapshot.files.get(&id) {
-            Some(selected) if regular_file(&selected.path,MAX_FILE_BYTES).ok()==Some(selected.size) => {
+            Some(selected) if regular_file(&selected.path,MAX_FILE_BYTES).ok()==Some(selected.size)
+                && fs::symlink_metadata(&selected.path).ok().is_some_and(|meta|
+                    meta.modified().ok()==selected.modified) => {
                 match File::open(&selected.path) {
                     Ok(file) if file.metadata().ok().is_some_and(|meta|
                         meta.is_file() && meta.len()==selected.size) => {
@@ -552,7 +559,7 @@ fn response(conn:&RemoteConnection,path:&str)->Result<reqwest::blocking::Respons
     url.set_query(None);
     let timeout=if path.starts_with("/v1/files/") {
         // Large verified LAN downloads can exceed a regular API timeout.
-        Duration::from_secs(3 * 60 * 60)
+        Duration::from_secs(24 * 60 * 60)
     }else{Duration::from_secs(40)};
     let response=conn.client.get(url)
         .header(KEY_HEADER,&conn.key)
@@ -675,13 +682,11 @@ pub fn fetch_cover(conn:&RemoteConnection,id:u64)->Result<Option<Vec<u8>>>{
 fn download_file(conn:&RemoteConnection,file:&RemoteFile,dest:&Path,cancel:&AtomicBool)
     ->Result<()>{
     if !approved_name(&file.name) || file.size>MAX_FILE_BYTES ||
-        file.sha256.len()!=64 || !file.sha256.bytes().all(|c|c.is_ascii_hexdigit()) ||
         file.blake3.len()!=64 || !file.blake3.bytes().all(|c|c.is_ascii_hexdigit()) {
         bail!("Archivo remoto no válido");
     }
     let mut source=response(conn,&format!("/v1/files/{}",file.id))?;
     let mut target=File::create(dest)?;
-    let mut sha=Sha256::new();
     let mut native=blake3::Hasher::new();
     let mut remaining=file.size;
     let mut buf=[0u8;64*1024];
@@ -691,15 +696,13 @@ fn download_file(conn:&RemoteConnection,file:&RemoteFile,dest:&Path,cancel:&Atom
         if count==0{break;}
         if count as u64>remaining{bail!("Archivo remoto demasiado grande");}
         target.write_all(&buf[..count])?;
-        sha.update(&buf[..count]);
         native.update(&buf[..count]);
         remaining-=count as u64;
     }
     target.flush()?;
     target.sync_all()?;
-    if remaining!=0 || format!("{:x}",sha.finalize())!=file.sha256.to_lowercase()
-        || native.finalize().to_hex().as_str()!=file.blake3{
-        bail!("Archivo incompleto o hash SHA-256/BLAKE3 incorrecto");
+    if remaining!=0 || native.finalize().to_hex().as_str()!=file.blake3{
+        bail!("Archivo incompleto o hash BLAKE3 incorrecto");
     }
     Ok(())
 }
@@ -726,8 +729,8 @@ fn local_copy_is_valid(attachments:&[crate::db::Attachment],file:&RemoteFile,
             || u64::try_from(entry.bytes).ok()!=Some(file.size){return false;}
         let path=Path::new(&entry.stored_path);
         if regular_file(path,MAX_FILE_BYTES).ok()!=Some(file.size){return false;}
-        file_digest(path,cancel).ok().is_some_and(|(sha,native)|
-            sha==file.sha256 && native==file.blake3)
+        file_digest(path,cancel).ok().is_some_and(|native|
+            native==file.blake3)
     })
 }
 
@@ -891,13 +894,14 @@ mod tests {
         fs::write(&public_path,b"public content").unwrap();
         fs::write(&secret_path,b"selected product attachment").unwrap();
         fs::write(&hidden_path,b"unselected product attachment").unwrap();
-        for (product,name,path,checksum) in [
-            (visible,"public.zip",&public_path,"public_hash"),
-            (visible,"private.zip",&secret_path,"private_hash"),
-            (hidden,"hidden_only.zip",&hidden_path,"secret_hash"),
+        for (product,name,path) in [
+            (visible,"public.zip",&public_path),
+            (visible,"private.zip",&secret_path),
+            (hidden,"hidden_only.zip",&hidden_path),
         ] {
+            let checksum=blake3::hash(&fs::read(path).unwrap()).to_hex().to_string();
             db.add_attachment(&NewAttachment {
-                asset_id:product,name,path:&path.to_string_lossy(),checksum,
+                asset_id:product,name,path:&path.to_string_lossy(),checksum:&checksum,
                 bytes:fs::metadata(path).unwrap().len() as i64,
                 count:0,mode:ArchiveMode::Reference,
             }).unwrap();
