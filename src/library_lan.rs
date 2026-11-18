@@ -10,7 +10,7 @@ use reqwest::{blocking::Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
     fs::{self, File},
     io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, UdpSocket},
@@ -21,12 +21,12 @@ use std::{
 };
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
-use crate::{booth, db::{Catalog, CATEGORIES}, managed_storage};
+use crate::{booth, db::{Catalog, CATEGORIES, FileFilter}, managed_storage, share_transfer};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const KEY_HEADER: &str = "X-SZKura-Library-Key";
 const MAX_PRODUCTS: usize = 2_000;
-const MAX_FILES: usize = 64;
+const MAX_FILES: usize = 512;
 const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_COVER_BYTES: u64 = 8 * 1024 * 1024;
@@ -36,8 +36,9 @@ const PAGE_SIZE: usize = 32;
 
 #[derive(Clone, Default)]
 pub struct ShareSelection {
-    // Product ID -> explicitly allowed attachment IDs (empty = metadata only).
-    pub products: BTreeMap<i64, BTreeSet<i64>>,
+    // The host selects WHOLE product records. Attached files are included as
+    // part of the same product, never controlled by a second file picker.
+    pub products: BTreeSet<i64>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -75,6 +76,7 @@ pub struct RemoteSummary {
     pub nsfw: bool,
     pub has_cover: bool,
     pub files: usize,
+    pub total_bytes: u64,
 }
 impl From<&RemoteAsset> for RemoteSummary {
     fn from(asset: &RemoteAsset) -> Self {
@@ -83,6 +85,7 @@ impl From<&RemoteAsset> for RemoteSummary {
             creator: asset.creator.clone(), tags: asset.tags.clone(),
             avatars: asset.avatars.clone(), nsfw: asset.nsfw,
             has_cover: asset.has_cover, files: asset.files.len(),
+            total_bytes:asset.files.iter().map(|f|f.size).sum(),
         }
     }
 }
@@ -163,7 +166,7 @@ fn snapshot(db_path: &Path, choice: &ShareSelection, cancel: &AtomicBool)
     let mut files = HashMap::new();
     let mut total_size = 0u64;
     let mut next_file_id = 1u64;
-    for (&local_id, allowed_file_ids) in &choice.products {
+    for &local_id in &choice.products {
         if cancel.load(Ordering::Relaxed) { bail!("Operación cancelada"); }
         let asset = db.get(local_id)?.context("Una ficha seleccionada ya no existe")?;
         if asset.title.len()>512 || asset.creator.len()>512
@@ -175,32 +178,24 @@ fn snapshot(db_path: &Path, choice: &ShareSelection, cancel: &AtomicBool)
         let cover = PathBuf::from(&asset.image_path);
         let has_cover = !asset.image_path.is_empty() && permitted_cover(&cover);
         if has_cover { covers.insert(id, cover); }
-        let mut visible_files = Vec::new();
-        if !allowed_file_ids.is_empty() {
-            let attached = db.attachments_for(local_id)?;
-            let lookup:HashMap<_,_> = attached.iter().map(|file|(file.id,file)).collect();
-            for &selected_id in allowed_file_ids {
-                if files.len() >= MAX_FILES { bail!("Límite de 64 adjuntos compartidos"); }
-                let file = lookup.get(&selected_id)
-                    .context("Un adjunto seleccionado ya no pertenece a la ficha")?;
-                if !approved_name(&file.original_name) {
-                    bail!("Nombre o extensión de archivo no compatible para compartir");
-                }
-                let path = PathBuf::from(&file.stored_path);
-                let size = regular_file(&path, MAX_FILE_BYTES)
-                    .with_context(|| format!("Adjunto no disponible: {}", file.original_name))?;
-                total_size = total_size.checked_add(size).context("Tamaño total no válido")?;
-                if total_size > MAX_TOTAL_BYTES { bail!("Máximo 16 GiB de adjuntos"); }
-                let digest = file_digest(&path, cancel)?;
-                let public_id = next_file_id;
-                next_file_id += 1;
-                files.insert(public_id, ServedFile {
-                    path, size, sha256:digest.clone(),
-                });
-                visible_files.push(RemoteFile {
-                    id:public_id, name:file.original_name.clone(),size,sha256:digest,
-                });
+        let mut visible_files=Vec::new();
+        for file in db.attachments_for(local_id)? {
+            if files.len()>=MAX_FILES { bail!("Máximo 512 archivos compartidos por sesión"); }
+            if !approved_name(&file.original_name){
+                bail!("Un adjunto tiene un nombre o extensión no compatible");
             }
+            let path=PathBuf::from(&file.stored_path);
+            let size=regular_file(&path,MAX_FILE_BYTES)
+                .with_context(||format!("Adjunto no disponible: {}",file.original_name))?;
+            total_size=total_size.checked_add(size).context("Tamaño total no válido")?;
+            if total_size>MAX_TOTAL_BYTES { bail!("Máximo 16 GiB de adjuntos"); }
+            let digest=file_digest(&path,cancel)?;
+            let public_id=next_file_id;
+            next_file_id+=1;
+            files.insert(public_id,ServedFile{path,size,sha256:digest.clone()});
+            visible_files.push(RemoteFile{
+                id:public_id,name:file.original_name,size,sha256:digest,
+            });
         }
         assets.push(RemoteAsset {
             id, title:asset.title,creator:asset.creator,category:asset.category,
@@ -274,12 +269,17 @@ fn filtered_assets(snapshot:&Snapshot, params:&HashMap<String,String>)->RemotePa
     let filter=params.get("q").map(|s|s.trim().to_lowercase()).unwrap_or_default();
     let category=params.get("category").map(String::as_str).unwrap_or("");
     let avatar=params.get("avatar").map(|s|s.to_uppercase()).unwrap_or_default();
+    let nsfw=params.get("nsfw").is_some_and(|value|value=="1");
+    let files_filter=params.get("files").map(String::as_str).unwrap_or("all");
     let offset=params.get("offset").and_then(|s|s.parse::<usize>().ok())
         .unwrap_or(0).min(MAX_PRODUCTS);
     let limit=params.get("limit").and_then(|s|s.parse::<usize>().ok())
         .unwrap_or(PAGE_SIZE).clamp(1,PAGE_SIZE);
     let filtered:Vec<_>=snapshot.assets.iter().filter(|asset| {
-        (category.is_empty() || asset.category==category)
+        (nsfw || !asset.nsfw)
+            && (files_filter!="with" || !asset.files.is_empty())
+            && (files_filter!="without" || asset.files.is_empty())
+            && (category.is_empty() || asset.category==category)
             && (avatar.is_empty() || asset.avatars.iter().any(|s|s==&avatar))
             && (filter.is_empty() || [&asset.title,&asset.creator,&asset.tags]
                 .iter().any(|text|text.to_lowercase().contains(&filter)))
@@ -499,13 +499,18 @@ pub fn connect(invitation:&str)->Result<RemoteConnection> {
     result.info=info;
     Ok(result)
 }
-pub fn browse(conn:&RemoteConnection,query:&str,category:&str,avatar:&str,offset:usize)
-    ->Result<RemotePage> {
+pub fn browse(conn:&RemoteConnection,query:&str,category:&str,avatar:&str,
+    files_filter:FileFilter,show_nsfw:bool,offset:usize)->Result<RemotePage> {
     if query.len()>120 || category.len()>70 || avatar.len()>70 {bail!("Filtro demasiado largo");}
     let mut url=conn.base.clone();
     url.set_path(&format!("{}/v1/assets",conn.base.path()));
     url.query_pairs_mut().append_pair("q",query).append_pair("category",category)
         .append_pair("avatar",avatar).append_pair("offset",&offset.to_string())
+        .append_pair("files",match files_filter{
+            FileFilter::All=>"all",FileFilter::WithFiles=>"with",
+            FileFilter::WithoutFiles=>"without"
+        })
+        .append_pair("nsfw",if show_nsfw{"1"}else{"0"})
         .append_pair("limit",&PAGE_SIZE.to_string());
     let response=conn.client.get(url).header(KEY_HEADER,&conn.key).send()?
         .error_for_status()?;
@@ -705,7 +710,7 @@ mod tests {
         // Attachment creation is tested in the managed-storage module; this
         // scenario verifies metadata allowlisting and public IDs independently.
         let mut selected=ShareSelection::default();
-        selected.products.insert(public,BTreeSet::new());
+        selected.products.insert(public);
         let snapshot=snapshot(&db_path,&selected,&AtomicBool::new(false)).unwrap();
         assert_eq!(snapshot.info.products,1);
         assert_eq!(snapshot.assets.len(),1);
@@ -742,22 +747,23 @@ mod tests {
         }
         let attachments=db.attachments_for(visible).unwrap();
         let public_id=attachments.iter().find(|f|f.original_name=="public.zip").unwrap().id;
+        assert!(public_id>0);
         let mut selection=ShareSelection::default();
-        selection.products.insert(visible,[public_id].into());
-        let session=start_library(&db_path,&selection,&AtomicBool::new(false)).unwrap();
+        selection.products.insert(visible);
+        let session=start_library(&db_path,&selection,tmp.path(),false,&AtomicBool::new(false)).unwrap();
         let receiver=connect(&session.invitation).unwrap();
         assert_eq!(receiver.info.products,1);
-        let page=browse(&receiver,"","","",0).unwrap();
+        let page=browse(&receiver,"","","",FileFilter::All,true,0).unwrap();
         assert_eq!(page.total,1);
         assert_eq!(page.items[0].id,1);
         assert_eq!(page.items[0].title,"VISIBLE_ONLY");
-        assert_eq!(page.items[0].files,1);
+        assert_eq!(page.items[0].files,2);
         let manifest=get_asset(&receiver,1).unwrap();
-        assert_eq!(manifest.files.len(),1);
+        assert_eq!(manifest.files.len(),2);
         assert_eq!(manifest.files[0].name,"public.zip");
         assert!(get_asset(&receiver,2).is_err());
         let serialized=serde_json::to_string(&manifest).unwrap();
-        assert!(!serialized.contains("private.zip"));
+        assert!(serialized.contains("private.zip"));
         assert!(!serialized.contains("HIDDEN_ONLY"));
         assert!(!serialized.contains(&public_path.to_string_lossy().to_string()));
         assert!(!serialized.contains(&secret_path.to_string_lossy().to_string()));
@@ -770,11 +776,11 @@ mod tests {
         let missing=format!("{}/v1/files/99",receiver.base.as_str());
         assert_eq!(client.get(missing).header(KEY_HEADER,&receiver.key)
             .send().unwrap().status(),reqwest::StatusCode::NOT_FOUND);
-        let allowed=response(&receiver,&format!("/v1/files/{}",manifest.files[0].id)).unwrap();
+        let allowed=response(&receiver,&format!("/v1/files/{}",manifest.files.iter().find(|file|file.name=="public.zip").unwrap().id)).unwrap();
         assert_eq!(allowed.bytes().unwrap().as_ref(),b"public content");
         session.stop();
         thread::sleep(Duration::from_millis(250));
-        assert!(browse(&receiver,"","","",0).is_err());
+        assert!(browse(&receiver,"","","",FileFilter::All,true,0).is_err());
     }
 
     #[test]
@@ -788,8 +794,8 @@ mod tests {
         db.update_details(public,"Remote product","Ropa","Creator","test","Description").unwrap();
         drop(db);
         let mut selected=ShareSelection::default();
-        selected.products.insert(public,BTreeSet::new());
-        let session=start_library(&host,&selected,&AtomicBool::new(false)).unwrap();
+        selected.products.insert(public);
+        let session=start_library(&host,&selected,tmp.path(),false,&AtomicBool::new(false)).unwrap();
         let conn=connect(&session.invitation).unwrap();
         let destination=tmp.path().join("assets");
         let covers=tmp.path().join("covers");
