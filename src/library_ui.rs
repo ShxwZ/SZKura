@@ -75,6 +75,7 @@ pub struct LibraryUi {
     host_rx:Option<Receiver<Result<LibrarySession,String>>>,
     host_cancel:Arc<AtomicBool>,
     host_status:String,
+    host_name:String,
     internet_access:bool,
     product_share_busy:bool,
     pending_tunnel_consent:bool,
@@ -115,7 +116,7 @@ impl Default for LibraryUi {
             host_avatar_filter:String::new(),host_files_filter:FileFilter::All,
             host_show_nsfw:false,host_selected_only:false,host_session:None,host_rx:None,
             host_cancel:Arc::new(AtomicBool::new(false)),host_status:String::new(),
-            internet_access:false,product_share_busy:false,pending_tunnel_consent:false,
+            host_name:"Mi biblioteca compartida".into(),internet_access:false,product_share_busy:false,pending_tunnel_consent:false,
             invite_input:String::new(),connection:None,connect_rx:None,
             search:String::new(),category:String::new(),avatar_filter:String::new(),
             files_filter:FileFilter::All,show_nsfw:false,remote_grid:true,
@@ -331,6 +332,9 @@ impl LibraryUi {
             self.host_show_nsfw=false;self.host_selected_only=false;
         }
     }
+    pub fn remote_library_name(&self)->Option<&str>{
+        self.connection.as_ref().map(|c|c.info.name.as_str())
+    }
     pub fn is_loading_products(&self)->bool{self.host_load_rx.is_some()}
     pub fn reset_picker_filters(&mut self){
         self.host_filter.clear();self.host_category.clear();
@@ -472,6 +476,12 @@ impl LibraryUi {
         }
         ui.label(RichText::new(format!("{}: {}",tr("Fichas que se compartirán"),
             self.selection_count())).color(colors().accent).size(13.0));
+        ui.add_space(6.0);
+        ui.label(RichText::new(tr("Nombre que verá el visitante"))
+            .size(12.5).color(colors().muted));
+        ui.add_sized([ui.available_width().min(540.0),36.0],
+            egui::TextEdit::singleline(&mut self.host_name)
+                .hint_text(tr("Mi biblioteca compartida")));
         if ui.checkbox(&mut self.internet_access,
             tr("Compartir también por Internet (Cloudflare Tunnel)")).changed(){
             self.host_status=if self.internet_access{
@@ -521,13 +531,14 @@ impl LibraryUi {
         let db=db_path.to_path_buf();
         let data=data_dir.to_path_buf();
         let internet=self.internet_access;
+        let name=self.host_name.trim().to_owned();
         let (tx,rx)=mpsc::channel();
         self.host_rx=Some(rx);
         self.host_status=tr("Preparando catálogo y verificando adjuntos...").into();
         thread::spawn(move||{
             let result=(||{
                 if install{share_transfer::install_component_with_consent(&data)?;}
-                library_lan::start_library(&db,&choice,&data,internet,&cancel)
+                library_lan::start_library(&db,&choice,&data,internet,&name,&cancel)
             })().map_err(|err:anyhow::Error|format!("{err:#}"));
             let _=tx.send(result);
         });
