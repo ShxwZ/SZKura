@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},
     fs::{self, File},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     net::{IpAddr, Ipv4Addr, UdpSocket},
     path::{Path, PathBuf},
     sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}},
@@ -184,9 +184,26 @@ fn regular_file(path: &Path, max_size: u64) -> Result<u64> {
     Ok(meta.len())
 }
 fn permitted_cover(path: &Path) -> bool {
+    // BOOTH saves the original bytes as v2-<hash>.img when recompressing
+    // them would not help. The native library reads these images by signature.
     matches!(path.extension().and_then(|s|s.to_str())
-        .map(str::to_ascii_lowercase).as_deref(),Some("png" | "jpg" | "jpeg" | "webp"))
+        .map(str::to_ascii_lowercase).as_deref(),
+        Some("png" | "jpg" | "jpeg" | "webp" | "img"))
         && regular_file(path, MAX_COVER_BYTES).is_ok()
+}
+
+/// Never trust the suffix (especially .img) when serving bytes to a peer.
+/// Sniff only an image signature on demand, then reset the streaming cursor.
+fn cover_mime(file:&mut File)->Option<&'static str>{
+    let mut signature=[0u8;32];
+    let length=file.read(&mut signature).ok()?;
+    file.seek(SeekFrom::Start(0)).ok()?;
+    match image::guess_format(&signature[..length]).ok()? {
+        image::ImageFormat::Jpeg=>Some("image/jpeg"),
+        image::ImageFormat::Png=>Some("image/png"),
+        image::ImageFormat::WebP=>Some("image/webp"),
+        _=>None,
+    }
 }
 
 /// Immutable, authorization-safe snapshot of SQLite metadata only.
@@ -375,12 +392,10 @@ fn handle_request(request:Request,snapshot:&Snapshot,prefix:&str,key:&str,
         match snapshot.covers.get(&id).filter(|p|permitted_cover(p)) {
             Some(path)=>{
                 match File::open(path) {
-                    Ok(file)=>{
-                        let mime=match path.extension().and_then(|s|s.to_str())
-                            .unwrap_or("").to_lowercase().as_str() {
-                            "jpg" | "jpeg"=>"image/jpeg",
-                            "png"=>"image/png",
-                            _=>"image/webp",
+                    Ok(mut file)=>{
+                        let Some(mime)=cover_mime(&mut file) else {
+                            let _=request.respond(Response::empty(StatusCode(404)));
+                            return;
                         };
                         let size=file.metadata().map(|meta|meta.len()).unwrap_or(0);
                         let reader=RevocableReader{file,stop:Arc::clone(&stop)};
@@ -684,18 +699,46 @@ pub fn decode_cover_small(bytes:&[u8],max_side:u32)->Option<image::RgbaImage>{
 pub fn fetch_cover(conn:&RemoteConnection,id:u64)->Result<Option<Vec<u8>>>{
     let mut url=conn.base.clone();
     url.set_path(&format!("{}/v1/covers/{id}",conn.base.path()));
-    // A missing/slow cover must not hold all other thumbnails hostage.
-    let mut reply=conn.client.get(url).header(KEY_HEADER,&conn.key)
-        .timeout(Duration::from_secs(25)).send()?;
-    if reply.status()==reqwest::StatusCode::NOT_FOUND { return Ok(None); }
-    reply=reply.error_for_status()?;
-    if reply.content_length().is_some_and(|n|n>MAX_COVER_BYTES) {
-        bail!("Portada remota demasiado grande");
+    // Cloudflare or a busy host can return a temporary 503/429 or disconnect.
+    // Retry transient failures, but never retry missing or oversized images.
+    for attempt in 0..3 {
+        let received=conn.client.get(url.clone()).header(KEY_HEADER,&conn.key)
+            .timeout(Duration::from_secs(25)).send();
+        let reply=match received {
+            Ok(reply)=>reply,
+            Err(err) if attempt<2=>{
+                let _=err;
+                thread::sleep(Duration::from_millis(250*(attempt+1)));
+                continue;
+            },
+            Err(err)=>return Err(err.into()),
+        };
+        let status=reply.status();
+        if status==reqwest::StatusCode::NOT_FOUND {return Ok(None);}
+        if !status.is_success(){
+            if attempt<2 && (status==reqwest::StatusCode::TOO_MANY_REQUESTS
+                || status==reqwest::StatusCode::REQUEST_TIMEOUT || status.is_server_error()) {
+                thread::sleep(Duration::from_millis(250*(attempt+1)));
+                continue;
+            }
+            bail!("Error HTTP al descargar portada: {status}");
+        }
+        if reply.content_length().is_some_and(|n|n>MAX_COVER_BYTES) {
+            bail!("Portada remota demasiado grande");
+        }
+        let mut bytes=Vec::new();
+        match reply.take(MAX_COVER_BYTES+1).read_to_end(&mut bytes){
+            Ok(_)=>{},
+            Err(_) if attempt<2=>{
+                thread::sleep(Duration::from_millis(250*(attempt+1)));
+                continue;
+            },
+            Err(err)=>return Err(err.into()),
+        }
+        if bytes.len() as u64>MAX_COVER_BYTES {bail!("Portada remota demasiado grande");}
+        return Ok(Some(bytes));
     }
-    let mut bytes=Vec::new();
-    reply.take(MAX_COVER_BYTES+1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64>MAX_COVER_BYTES {bail!("Portada remota demasiado grande");}
-    Ok(Some(bytes))
+    bail!("No se pudo descargar la portada tras varios intentos")
 }
 
 fn download_file(conn:&RemoteConnection,file:&RemoteFile,dest:&Path,cancel:&AtomicBool)
@@ -992,6 +1035,78 @@ mod tests {
         assert!(permitted_cover(&path),
             "Local catalog permits covers up to 32 MiB, so the host must too");
         assert!(decode_cover_prepared(b"invalid png bytes",360).is_none());
+    }
+
+    #[test]
+    fn booth_img_cover_is_published_with_real_mime_not_filename(){
+        let tmp=tempfile::tempdir().unwrap();
+        let db_path=tmp.path().join("catalog.sqlite");
+        let mut db=Catalog::open(&db_path).unwrap();
+        let product=db.create_product("BOOTH original","Ropa").unwrap();
+        let cover=tmp.path().join("v2-original.img");
+        let mut writer=std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(24,24)
+            .write_to(&mut writer,image::ImageFormat::Png).unwrap();
+        let data=writer.into_inner();
+        fs::write(&cover,&data).unwrap();
+        db.set_cover(product,&cover.to_string_lossy()).unwrap();
+        let mut selection=ShareSelection::default();
+        selection.products.insert(product);
+        let session=start_library(&db_path,&selection,tmp.path(),false,"Portadas",
+            &AtomicBool::new(false)).unwrap();
+        let conn=connect(&session.invitation).unwrap();
+        let page=browse(&conn,"","","",FileFilter::All,false,0).unwrap();
+        assert!(page.items[0].has_cover,"BOOTH .img must appear in remote catalog");
+        let url=format!("{}/v1/covers/1",conn.base.as_str());
+        let response=conn.client.get(&url).header(KEY_HEADER,&conn.key).send().unwrap();
+        assert_eq!(response.status(),reqwest::StatusCode::OK);
+        assert_eq!(response.headers()[reqwest::header::CONTENT_TYPE],"image/png");
+        assert_eq!(response.bytes().unwrap().as_ref(),data);
+        assert!(decode_cover_prepared(&fetch_cover(&conn,1).unwrap().unwrap(),360).is_some());
+        session.stop();
+    }
+
+    #[test]
+    fn invalid_img_is_not_disclosed_as_image(){
+        let temp=tempfile::tempdir().unwrap();
+        let db_path=temp.path().join("catalog.sqlite");
+        let mut db=Catalog::open(&db_path).unwrap();
+        let id=db.create_product("Bad image","Ropa").unwrap();
+        let bogus=temp.path().join("v2-not-an-image.img");
+        fs::write(&bogus,b"private non-image content").unwrap();
+        db.set_cover(id,&bogus.to_string_lossy()).unwrap();
+        let mut choice=ShareSelection::default();
+        choice.products.insert(id);
+        let session=start_library(&db_path,&choice,temp.path(),false,"Portadas",
+            &AtomicBool::new(false)).unwrap();
+        let conn=connect(&session.invitation).unwrap();
+        assert!(fetch_cover(&conn,1).unwrap().is_none());
+        session.stop();
+    }
+
+    #[test]
+    fn remote_cover_retries_temporary_503_errors(){
+        let server=Server::http("127.0.0.1:0").unwrap();
+        let address=server.server_addr().to_ip().unwrap();
+        let endpoint=format!("http://{address}/l/test");
+        let worker=thread::spawn(move||{
+            for attempt in 0..3{
+                let request=server.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+                assert_eq!(request.url(),"/l/test/v1/covers/1");
+                let reply=if attempt<2{
+                    Response::from_data(b"busy".to_vec()).with_status_code(StatusCode(503))
+                }else{Response::from_data(b"cover".to_vec())};
+                request.respond(reply).unwrap();
+            }
+        });
+        let conn=RemoteConnection{
+            base:Url::parse(&endpoint).unwrap(),key:"test".into(),
+            client:http_client().unwrap(),info:LibraryInfo{
+                version:PROTOCOL_VERSION,name:String::new(),products:1,avatars:Vec::new(),
+            },invitation:String::new(),
+        };
+        assert_eq!(fetch_cover(&conn,1).unwrap(),Some(b"cover".to_vec()));
+        worker.join().unwrap();
     }
 
     #[test]
