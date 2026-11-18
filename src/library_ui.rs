@@ -229,8 +229,8 @@ impl LibraryUi {
             let _=tx.send(result);
         });
     }
-    /// All choices are local UI state, never published until the host explicitly
-    /// presses Start. Files start unselected even when a product is selected.
+    /// Publication choices remain local until the host explicitly presses Start.
+    /// Every selected product includes its full attachment list.
     /// One sharing session at a time, including a pending Cloudflare install.
     pub fn host_busy(&self)->bool{
         self.host_session.is_some() || self.host_rx.is_some()
@@ -238,12 +238,10 @@ impl LibraryUi {
     }
     pub fn set_product_share_busy(&mut self,busy:bool){self.product_share_busy=busy;}
     fn selection(&self)->ShareSelection{
-        ShareSelection{products:self.host_products.iter().filter(|asset|
-            (self.host_publish_nsfw || !asset.nsfw)
-            && match self.host_mode{
-                PublishMode::Exclude=>!self.host_excluded.contains(&asset.id),
-                PublishMode::Include=>self.host_included.contains(&asset.id),
-            }).map(|asset|asset.id).collect()}
+        // Same predicate as the live UI preview: no discrepancy between
+        // what is counted and what is actually published.
+        ShareSelection{products:self.host_products.iter()
+            .filter(|asset|self.selected(asset.id)).map(|asset|asset.id).collect()}
     }
     pub fn selection_count(&self)->usize{self.publication_preview().visible}
     /// Counts ALL published products, not just the current filtered page.
