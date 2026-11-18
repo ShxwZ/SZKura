@@ -676,21 +676,34 @@ impl LibraryUi {
             }
         }
         if let Some(answer)=poll_result(&mut self.browse_rx){
-            match answer{
-                Ok(page)=>{
-                    if self.offset==0 {
-                        self.remote_page=page;
-                    }else{
-                        self.remote_page.total=page.total;
-                        for item in page.items{
-                            if !self.remote_page.items.iter().any(|a|a.id==item.id){
-                                self.remote_page.items.push(item);
+            let obsolete=self.browse_parameters.as_ref().is_none_or(|params|{
+                params.0!=self.search || params.1!=self.category
+                    || params.2!=self.avatar_filter
+                    || params.3!=self.files_filter || params.4!=self.show_nsfw
+            });
+            if obsolete {
+                // A filter may change while the HTTP request is in flight.
+                // Never append results from an older filter to the new catalog.
+                self.offset=0;
+                self.remote_page=RemotePage{total:0,items:Vec::new()};
+                self.browse_parameters=None;
+            }else{
+                match answer {
+                    Ok(page)=>{
+                        if self.offset==0 {
+                            self.remote_page=page;
+                        }else{
+                            self.remote_page.total=page.total;
+                            for item in page.items{
+                                if !self.remote_page.items.iter().any(|a|a.id==item.id){
+                                    self.remote_page.items.push(item);
+                                }
                             }
                         }
-                    }
-                    // Visible tiles enqueue only covers they actually need.
-                },
-                Err(err)=>self.status=format!("{}: {err}",tr("Error al cargar catálogo")),
+                        // Visible tiles enqueue only covers they actually need.
+                    },
+                    Err(err)=>self.status=format!("{}: {err}",tr("Error al cargar catálogo")),
+                }
             }
         }
         if let Some(answer)=poll_result(&mut self.detail_rx){
@@ -755,6 +768,9 @@ impl LibraryUi {
             let request=(self.search.clone(),self.category.clone(),
                 self.avatar_filter.clone(),self.files_filter,self.show_nsfw,self.offset);
             if self.browse_parameters.as_ref()!=Some(&request){
+                if self.offset==0{
+                    self.remote_page=RemotePage{total:0,items:Vec::new()};
+                }
                 self.request_browse();
             }
         }
