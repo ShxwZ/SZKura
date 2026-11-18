@@ -86,6 +86,7 @@ impl LibraryUi {
         self.detail=None;
         self.browse_rx=None;
         self.detail_rx=None;
+        self.connect_rx=None;
         self.cover_rx=None;
         self.cover_textures.clear();
         self.connection=None;
@@ -384,6 +385,10 @@ impl LibraryUi {
         }
         if self.remote_active && self.connection.is_some() && self.detail.is_none()
             && self.browse_rx.is_none() {
+            if let Some((previous_search,previous_cat,previous_avatar,_))=&self.browse_parameters {
+                if previous_search!=&self.search || previous_cat!=&self.category
+                    || previous_avatar!=&self.avatar_filter {self.offset=0;}
+            }
             let request=(self.search.clone(),self.category.clone(),
                 self.avatar_filter.clone(),self.offset);
             if self.browse_parameters.as_ref()!=Some(&request){
@@ -407,12 +412,9 @@ impl LibraryUi {
         thread::spawn(move||{
             for id in ids {
                 let image=library_lan::fetch_cover(&conn,id).ok().flatten()
-                    .and_then(|bytes|image::load_from_memory(&bytes).ok())
-                    .map(|image|{
-                        let thumb=image.thumbnail(360,230).to_rgba8();
-                        egui::ColorImage::from_rgba_unmultiplied(
-                            [thumb.width() as usize,thumb.height() as usize],thumb.as_raw())
-                    });
+                    .and_then(|bytes|library_lan::decode_cover_small(&bytes,360))
+                    .map(|thumb|egui::ColorImage::from_rgba_unmultiplied(
+                        [thumb.width() as usize,thumb.height() as usize],thumb.as_raw()));
                 if tx.send(CoverReady{id,image}).is_err(){break;}
             }
         });
