@@ -878,7 +878,14 @@ impl BoothApp {
                     ui.add_space(5.0);
                     ui.label(RichText::new(tr("SZKura")).strong().size(23.0).color(colors().text));
                     ui.add_space(15.0);
-                    ui.label(RichText::new(tr("Biblioteca local de assets")).size(13.0).color(colors().muted));
+                    ui.label(RichText::new(tr(if self.library_ui.remote_active{
+                        "ESTÁS EN OTRA BIBLIOTECA · SOLO LECTURA"
+                    }else if self.library_ui.picker_open{
+                        "ELIGE QUÉ COMPARTIR"
+                    }else{"Biblioteca local de assets"}))
+                        .size(13.0)
+                        .color(if self.library_ui.remote_active{colors().accent}else{colors().muted})
+                        .strong());
                     ui.label(RichText::new(updater::installed_version()).size(11.5).color(colors().accent));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                         if busy{ui.spinner();}
@@ -899,6 +906,13 @@ impl BoothApp {
                 });
                 self.sharing.active_header(ui);
                 self.library_ui.active_header(ui);
+                if self.library_ui.remote_active{
+                    ui.add_space(5.0);
+                    ui.label(RichText::new(format!("{} {}",
+                        tr("Explorando biblioteca:"),
+                        self.library_ui.remote_library_name().unwrap_or(tr("Conectar a biblioteca"))))
+                        .size(12.5).color(colors().accent));
+                }
                 if self.library_ui.picker_open {
                     ui.add_space(10.0);
                     ui.horizontal(|ui|self.library_ui.picker_search(ui));

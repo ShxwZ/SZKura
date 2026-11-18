@@ -1056,14 +1056,31 @@ impl LibraryUi {
             .frame(egui::Frame::new().fill(colors().bg)
                 .inner_margin(egui::Margin::symmetric(19,17)))
             .show(ctx,|ui|{
+            if let Some(info)=self.connection.as_ref().map(|connection|connection.info.clone()){
+                egui::Frame::new().fill(colors().panel)
+                    .stroke(egui::Stroke::new(1.0,colors().accent))
+                    .corner_radius(10).inner_margin(12).show(ui,|ui|{
+                        ui.horizontal_wrapped(|ui|{
+                            icon(ui,Icon::Link,colors().accent,20.0);
+                            ui.vertical(|ui|{
+                                ui.label(RichText::new(format!("{} {}",tr("Explorando biblioteca:"),
+                                    info.name)).strong().size(15.0).color(colors().accent));
+                                ui.label(RichText::new(tr(
+                                    "Catálogo ajeno en solo lectura. Importar no modifica la biblioteca anfitriona."))
+                                    .size(12.0).color(colors().muted));
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                                if action(ui,Icon::Back,"Volver a mi biblioteca",false){
+                                    self.leave_remote();
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(12.0);
+            }
             if self.connection.is_none(){
-                ui.horizontal(|ui|{
-                    if action(ui,Icon::Back,"Volver a mi biblioteca",true){
-                        self.leave_remote();
-                    }
-                    ui.label(RichText::new(tr("Conectar a biblioteca"))
-                        .size(23.0).strong().color(colors().text));
-                });
+                ui.label(RichText::new(tr("Conectar a biblioteca"))
+                    .size(23.0).strong().color(colors().text));
                 ui.add_space(14.0);
                 ui.label(RichText::new(tr(
                     "Introduce la invitación LAN o HTTPS de Cloudflare que compartió el anfitrión."))
