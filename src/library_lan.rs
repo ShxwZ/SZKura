@@ -102,6 +102,8 @@ pub struct LibraryInfo {
     pub name: String,
     /// Number of visible products only.
     pub products: usize,
+    /// Filter choices come from EXCLUSIVELY published products.
+    pub avatars: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -203,9 +205,16 @@ fn snapshot(db_path: &Path, choice: &ShareSelection, cancel: &AtomicBool)
             booth_url:asset.booth_url,nsfw:asset.nsfw,has_cover,files:visible_files,
         });
     }
+    let mut avatars:BTreeSet<String>=BTreeSet::new();
+    for product in &assets {
+        for label in &product.avatars {
+            if label.len()<=70 {avatars.insert(label.clone());}
+        }
+    }
     Ok(Snapshot {
         info:LibraryInfo {
-            version:PROTOCOL_VERSION,name:"Biblioteca compartida".into(),products:assets.len(),
+            version:PROTOCOL_VERSION,name:"Biblioteca compartida".into(),
+            products:assets.len(),avatars:avatars.into_iter().take(512).collect(),
         }, assets, covers, files,
     })
 }
@@ -521,12 +530,13 @@ pub fn connect(invitation:&str)->Result<RemoteConnection> {
     let (base,key)=lan_url(invitation)?;
     let mut result=RemoteConnection{
         base,key,client:http_client()?,info:LibraryInfo{
-            version:0,name:String::new(),products:0,
+            version:0,name:String::new(),products:0,avatars:Vec::new(),
         },invitation:invitation.trim().into(),
     };
     let info:LibraryInfo=limited_json(response(&result,"/v1/library")?)?;
     if info.version!=PROTOCOL_VERSION || info.products>MAX_PRODUCTS
-        || info.name.len()>120 {
+        || info.name.len()>120 || info.avatars.len()>512
+        || info.avatars.iter().any(|avatar|avatar.len()>70) {
         bail!("Versión incompatible o biblioteca remota no válida");
     }
     result.info=info;
