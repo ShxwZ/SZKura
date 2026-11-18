@@ -375,7 +375,7 @@ pub fn translate(language:Language,s:&str)->&str {
         "Copiar invitación"=>"Copy invitation",
         "Detener biblioteca compartida"=>"Stop sharing library",
         "Para cambiar los permisos, detén la sesión y vuelve a compartir."=>"To change permissions, stop sharing and start a new session.",
-        "Preparando catálogo y verificando adjuntos..."=>"Preparing catalog and verifying attachments...",
+        "Preparando fichas y permisos..."=>"Preparing products and permissions...",
         "Cargar productos para seleccionar"=>"Load products for selection",
         "Fichas seleccionadas"=>"Selected products",
         "Limpiar selección"=>"Clear selection",
@@ -646,6 +646,14 @@ mod tests{
             assert_eq!(translate(Language::Spanish,es),es);
             assert_eq!(translate(Language::English,es),en);
         }
+    }
+
+    #[test]
+    fn metadata_only_sharing_status_is_translated(){
+        assert_eq!(translate(Language::Spanish,"Preparando fichas y permisos..."),
+            "Preparando fichas y permisos...");
+        assert_eq!(translate(Language::English,"Preparando fichas y permisos..."),
+            "Preparing products and permissions...");
     }
 
     #[test]
