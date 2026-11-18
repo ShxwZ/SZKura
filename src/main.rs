@@ -827,33 +827,9 @@ impl BoothApp {
     /// expand a card and cause the next columns to overlap (alpha.4 layout bug).
     fn draw_cover(&mut self, ui: &mut egui::Ui, ctx: &egui::Context,
                   path: &str, width: f32, height: f32, max_side:u32) {
-        let texture = self.image_for(ctx, path, max_side);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 10.0, colors().faint_bg);
-        if let Some(tex)=texture {
-            if let Some(bg)=&tex.background {
-                // egui Painter::image ignores corner radius. Using Image's
-                // rounded textured shape keeps the blur INSIDE the entire
-                // same rectangle as the foreground (no inset/visible stripes).
-                egui::Image::new((bg.id(),bg.size_vec2()))
-                    .corner_radius(10)
-                    .tint(Color32::from_rgb(210,210,210))
-                    .paint_at(ui,rect);
-                ui.painter().rect_filled(rect,10.0,
-                    Color32::from_black_alpha(45));
-            }
-            let bounds=fitted_cover_rect(rect,tex.foreground.size_vec2());
-            // A small rounded edge on the sharp image also prevents square
-            // corners when a wide cover touches the container's outer edge.
-            egui::Image::new((tex.foreground.id(),tex.foreground.size_vec2()))
-                .corner_radius(4)
-                .paint_at(ui,bounds);
-        } else {
-            ui.painter().text(
-                rect.center(), egui::Align2::CENTER_CENTER, tr("Sin portada"),
-                egui::FontId::proportional(13.0), colors().muted,
-            );
-        }
+        let texture=self.image_for(ctx,path,max_side);
+        ui_support::paint_cover(ui,texture.as_ref().map(|t|&t.foreground),
+            texture.as_ref().and_then(|t|t.background.as_ref()),width,height);
     }
 
     /// Shared edit/new cover picker. The preview and action share one bounded
@@ -2556,15 +2532,9 @@ impl eframe::App for BoothApp {
 /// Fit the sharp cover exactly inside the blurred background without
 /// cropping or stretching. For tall covers the sharp image now reaches both
 /// vertical edges; the blurred backdrop only fills the empty sidebars.
-fn fitted_cover_rect(frame:egui::Rect,natural:egui::Vec2)->egui::Rect {
-    if natural.x<=0.0 || natural.y<=0.0 {
-        return egui::Rect::from_center_size(frame.center(),egui::Vec2::ZERO);
-    }
-    let factor=(frame.width()/natural.x)
-        .min(frame.height()/natural.y)
-        .min(1.0)
-        .max(0.0);
-    egui::Rect::from_center_size(frame.center(),natural*factor)
+#[cfg(test)]
+fn fitted_cover_rect(frame:egui::Rect,natural:egui::Vec2)->egui::Rect{
+    ui_support::fitted_cover_rect(frame,natural)
 }
 
 /// Reserve a bounded cover column and let the form use the remaining width.
