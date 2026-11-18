@@ -702,6 +702,20 @@ fn download_file(conn:&RemoteConnection,file:&RemoteFile,dest:&Path,cancel:&Atom
     }
     Ok(())
 }
+/// Validate downloaded containers before changing the destination library.
+fn archive_entry_count(path:&Path)->Result<i64>{
+    let ext=path.extension().and_then(|ext|ext.to_str()).unwrap_or("");
+    let count=if ext.eq_ignore_ascii_case("zip"){
+        zip::ZipArchive::new(File::open(path)?)
+            .context("ZIP remoto inválido")?.len()
+    }else if ext.eq_ignore_ascii_case("7z"){
+        crate::package_inspect::sevenzip_count(path)?
+    }else if ext.eq_ignore_ascii_case("rar"){
+        crate::package_inspect::rar_count(path)?
+    }else{0};
+    Ok(i64::try_from(count)?)
+}
+
 /// Verify registered local content before trusting the SQLite cache. Never
 /// skip a download based only on a filename, timestamp or stale stored hash.
 fn local_copy_is_valid(attachments:&[crate::db::Attachment],file:&RemoteFile,
@@ -761,9 +775,10 @@ pub fn import_asset(conn:&RemoteConnection,id:u64,db_path:&Path,
         fs::create_dir(&folder)?;
         let dest=folder.join(&file.name);
         download_file(conn,file,&dest,cancel)?;
+        let file_count=archive_entry_count(&dest)?;
         downloaded.push(RemoteStagedFile{
             original_name:file.name.clone(),source:dest,
-            blake3:file.blake3.clone(),bytes:file.size,
+            blake3:file.blake3.clone(),bytes:file.size,file_count,
         });
     }
     let cover=if existing.is_none() && asset.has_cover{
