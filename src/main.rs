@@ -5,8 +5,10 @@ mod cover_cache;
 mod theme;
 mod i18n;
 mod sharing_ui;
+mod library_ui;
 mod startup_diagnostics;
 use sharing_ui::SharingUi;
+use library_ui::LibraryUi;
 use cover_cache::{CoverRequest, CoverResult};
 use theme::{ThemeKind,colors};
 use i18n::{Language,tr};
@@ -70,6 +72,7 @@ struct BoothApp {
     paths: AppPaths,
     db: Catalog,
     sharing: SharingUi,
+    library_ui:LibraryUi,
     assets: Vec<Asset>,
     total: i64,
     filtered: i64,
@@ -175,7 +178,7 @@ impl BoothApp {
         i18n::select(ui_language);
         Self::apply_theme(&cc.egui_ctx);
         let mut app=Self {
-            paths,db,sharing:SharingUi::new(sharing_enabled),assets:Vec::new(),total:0,filtered:0,filtered_bytes:0,
+            paths,db,sharing:SharingUi::new(sharing_enabled),library_ui:LibraryUi::new(),assets:Vec::new(),total:0,filtered:0,filtered_bytes:0,
             query:String::new(),category:String::new(),avatar_filter:String::new(),
             avatar_options:Vec::new(),files_filter:FileFilter::All,displayed_limit:96,
             last_filters:(String::new(),String::new(),String::new(),FileFilter::All,false,false),
@@ -892,7 +895,8 @@ impl BoothApp {
                     });
                 });
                 self.sharing.active_header(ui);
-                if !self.show_settings && self.selected.is_none() && !self.new_dialog {
+                if !self.show_settings && self.selected.is_none() && !self.new_dialog
+                     && !self.library_ui.remote_active {
                     ui.add_space(10.0);
                     ui.horizontal(|ui|{
                         icon(ui,Icon::Search,colors().muted,19.0);
@@ -918,7 +922,22 @@ impl BoothApp {
                 egui::ScrollArea::vertical().id_salt("nav-scroll")
                     .auto_shrink([false,false]).show(ui,|ui|{
                         ui.spacing_mut().item_spacing.y=5.0;
+                        if self.library_ui.remote_active {
+                            ui.label(RichText::new(tr("BIBLIOTECA REMOTA"))
+                                .strong().color(colors().accent).size(11.0));
+                            ui.add_space(12.0);
+                            if nav_choice(ui,"Volver a mi biblioteca",false){
+                                self.library_ui.leave_remote();
+                            }
+                            return;
+                        }
                         ui.label(RichText::new(tr("BIBLIOTECA")).color(colors().accent).strong().size(11.0));
+                        ui.add_space(7.0);
+                        if nav_choice(ui,"Conectar a biblioteca",false) {
+                            self.library_ui.open_connect();
+                            self.selected=None;
+                            self.new_dialog=false;
+                        }
                         ui.add_space(9.0);
                         if self.category_button(ui,"Todos los productos",""){
                             self.category.clear();self.selected=None;self.new_dialog=false;
@@ -1871,6 +1890,8 @@ impl BoothApp {
                 ui.label(RichText::new(tr("Antes de importar, SZKura guarda automáticamente una copia de recuperación de tu SQLite actual.")
                 ).color(colors().muted).size(11.5));
                 ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                self.library_ui.settings_ui(ui,&self.db,&self.paths.db);
+                ui.add_space(18.0);ui.separator();ui.add_space(8.0);
                 self.sharing.settings_ui(ui,&mut self.db,
                     self.paths.db.parent().unwrap_or(Path::new(".")));
                 ui.add_space(18.0);ui.separator();ui.add_space(8.0);
@@ -2224,6 +2245,13 @@ impl eframe::App for BoothApp {
                 Err(error)=>self.status=format!("Error en transferencia: {error}"),
             }
         }
+        if let Some(imported_id)=self.library_ui.poll(ctx){
+            if let Err(err)=self.reload(){self.status=format!("Error: {err}");}
+            self.select_id(imported_id);
+            self.show_settings=false;
+            self.new_dialog=false;
+            self.status=tr("Ficha añadida a mi biblioteca.").into();
+        }
         self.poll_archive_scan();
         self.poll_unity_paths(ctx);
         self.poll_cover_results(ctx);
@@ -2233,7 +2261,7 @@ impl eframe::App for BoothApp {
                 self.status=format!("Error actualizando favoritos: {error}");
             }
         }
-        if !self.show_settings && self.configured {
+        if !self.show_settings && self.configured && !self.library_ui.remote_active {
             self.handle_dropped_files(ctx);
         }
         self.header(ctx);
@@ -2258,6 +2286,9 @@ impl eframe::App for BoothApp {
             });
         // Exactly one CentralPanel, replacing the old floating create/edit windows.
         if !self.configured || self.show_settings {self.settings_page(ctx);}
+        else if self.library_ui.remote_active {
+            self.library_ui.page(ctx,&self.paths.db,&self.paths.library,&self.paths.covers);
+        }
         else if self.new_dialog{self.new_product_window(ctx);}
         else if self.selected.is_some(){self.detail(ctx);}
         else{self.catalog(ctx);}
