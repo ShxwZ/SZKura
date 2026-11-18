@@ -23,6 +23,7 @@ struct CoverReady {
 pub struct LibraryUi {
     pub remote_active:bool,
     host_products:Vec<Asset>,
+    host_load_rx:Option<Receiver<Result<Vec<Asset>,String>>>,
     host_files:HashMap<i64,Vec<Attachment>>,
     host_selection:ShareSelection,
     host_filter:String,
@@ -55,7 +56,8 @@ pub struct LibraryUi {
 impl Default for LibraryUi {
     fn default()->Self{
         Self{
-            remote_active:false,host_products:Vec::new(),host_files:HashMap::new(),
+            remote_active:false,host_products:Vec::new(),host_load_rx:None,
+            host_files:HashMap::new(),
             host_selection:ShareSelection::default(),host_filter:String::new(),
             host_page:0,host_expanded:BTreeSet::new(),host_session:None,host_rx:None,
             host_cancel:Arc::new(AtomicBool::new(false)),host_status:String::new(),
@@ -96,17 +98,19 @@ impl LibraryUi {
         self.host_session=None;
         self.host_status=tr("Biblioteca compartida detenida.").into();
     }
-    fn load_host_products(&mut self,db:&Catalog){
-        match db.list_filtered_visibility("","","",FileFilter::All,false,true,2_001,0){
-            Ok(products) if products.len()<=2_000 => {
-                self.host_products=products;
-                self.host_files.clear();
-                self.host_expanded.clear();
-                self.host_status=tr("Selecciona las fichas y los archivos que deseas publicar.").into();
-            },
-            Ok(_)=>self.host_status=tr("La biblioteca supera el límite de 2000 productos.").into(),
-            Err(err)=>self.host_status=format!("{}: {err}",tr("Error leyendo biblioteca")),
-        }
+    fn load_host_products(&mut self,db_path:&Path){
+        if self.host_load_rx.is_some() || self.host_rx.is_some()
+            || self.host_session.is_some(){return;}
+        let path=db_path.to_path_buf();
+        let (tx,rx)=mpsc::channel();
+        self.host_load_rx=Some(rx);
+        self.host_status=tr("Cargando selección de productos...").into();
+        thread::spawn(move||{
+            let result=Catalog::open(&path).and_then(|db|
+                db.list_filtered_visibility("","","",FileFilter::All,false,true,2_001,0))
+                .map_err(|err|format!("{err:#}"));
+            let _=tx.send(result);
+        });
     }
     fn start_sharing(&mut self,db_path:&Path){
         if self.host_rx.is_some() || self.host_session.is_some(){return;}
@@ -181,7 +185,7 @@ impl LibraryUi {
         }
         ui.horizontal_wrapped(|ui|{
             if ui.button(tr("Cargar productos para seleccionar")).clicked(){
-                self.load_host_products(db);
+                self.load_host_products(db_path);
             }
             if !self.host_products.is_empty(){
                 ui.label(format!("{}: {}",tr("Fichas seleccionadas"),
@@ -192,6 +196,7 @@ impl LibraryUi {
                 }
             }
         });
+        if self.host_load_rx.is_some(){ui.spinner();}
         if self.host_products.is_empty() {
             ui.label(RichText::new(tr("Ninguna ficha se publicará hasta que la selecciones y pulses Compartir biblioteca."))
                 .color(colors().muted).size(12.0));
@@ -283,6 +288,21 @@ impl LibraryUi {
     }
 
     pub fn poll(&mut self,ctx:&egui::Context)->Option<i64>{
+        if let Some(answer)=self.host_load_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
+            self.host_load_rx=None;
+            match answer {
+                Ok(products) if products.len()<=2_000=>{
+                    self.host_products=products;
+                    self.host_files.clear();
+                    self.host_expanded.clear();
+                    self.host_selection.products.clear();
+                    self.host_page=0;
+                    self.host_status=tr("Selecciona las fichas y los archivos que deseas publicar.").into();
+                },
+                Ok(_)=>self.host_status=tr("La biblioteca supera el límite de 2000 productos.").into(),
+                Err(err)=>self.host_status=format!("{}: {err}",tr("Error leyendo biblioteca")),
+            }
+        }
         if let Some(answer)=self.host_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
             self.host_rx=None;
             match answer {
@@ -370,7 +390,7 @@ impl LibraryUi {
                 self.request_browse();
             }
         }
-        if self.host_rx.is_some() || self.connect_rx.is_some()
+        if self.host_load_rx.is_some() || self.host_rx.is_some() || self.connect_rx.is_some()
             || self.browse_rx.is_some() || self.detail_rx.is_some()
             || self.import_rx.is_some() || self.cover_rx.is_some(){
             ctx.request_repaint_after(Duration::from_millis(120));
