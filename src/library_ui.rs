@@ -11,7 +11,7 @@ use szkura::{
     db::{Asset, Catalog, FileFilter, CATEGORIES},
     share_transfer,
     library_lan::{self,LibrarySession,ShareSelection,RemoteConnection,RemoteAsset,
-        RemoteSummary,RemotePage},
+        RemoteSummary,RemotePage,RemoteLocalState},
 };
 use crate::{i18n::tr,theme::colors,ui_support::{
     Icon,action,icon,nav_choice,nav_sensitive_choice,
@@ -85,8 +85,11 @@ pub struct LibraryUi {
     browse_rx:Option<Receiver<Result<RemotePage,String>>>,
     browse_parameters:Option<(String,String,String,FileFilter,bool,usize)>,
     detail:Option<RemoteAsset>,
-    detail_rx:Option<Receiver<Result<RemoteAsset,String>>>,
-    import_rx:Option<Receiver<Result<i64,String>>>,
+    detail_rx:Option<Receiver<Result<(RemoteAsset,RemoteLocalState),String>>>,
+    detail_state:RemoteLocalState,
+    import_rx:Option<Receiver<Result<szkura::db::RemoteCommitReport,String>>>,
+    pending_import:Option<u64>,
+    local_db_path:Option<PathBuf>,
     import_cancel:Arc<AtomicBool>,
     cover_rx:Option<Receiver<CoverReady>>,
     cover_textures:HashMap<u64,TextureHandle>,
@@ -109,7 +112,8 @@ impl Default for LibraryUi {
             files_filter:FileFilter::All,show_nsfw:false,remote_grid:true,
             remote_page:RemotePage{total:0,items:Vec::new()},offset:0,
             browse_rx:None,browse_parameters:None,detail:None,detail_rx:None,
-            import_rx:None,
+            detail_state:RemoteLocalState::Unknown,import_rx:None,pending_import:None,
+            local_db_path:None,
             import_cancel:Arc::new(AtomicBool::new(false)),
             cover_rx:None,cover_textures:HashMap::new(),status:String::new(),
         }
@@ -128,6 +132,7 @@ impl LibraryUi {
         self.remote_active=false;
         self.import_cancel.store(true,Ordering::Relaxed);
         self.detail=None;
+        self.pending_import=None;
         self.browse_rx=None;
         self.detail_rx=None;
         self.connect_rx=None;
@@ -538,16 +543,21 @@ impl LibraryUi {
         }
         if let Some(answer)=poll_result(&mut self.detail_rx){
             match answer{
-                Ok(asset)=>{self.detail=Some(asset);},
+                Ok((asset,state))=>{
+                    self.detail_state=state;
+                    self.detail=Some(asset);
+                },
                 Err(err)=>self.status=format!("{}: {err}",tr("Error al cargar ficha")),
             }
         }
         if let Some(answer)=poll_result(&mut self.import_rx){
             match answer{
-                Ok(local_id)=>{
-                    self.status=tr("Ficha añadida a mi biblioteca.").into();
+                Ok(report)=>{
+                    self.status=tr(if report.is_new{
+                        "Ficha completa importada correctamente."
+                    }else{"Ficha actualizada; las versiones locales anteriores se conservan."}).into();
                     self.leave_remote();
-                    return Some(local_id);
+                    return Some(report.asset_id);
                 },
                 Err(err)=>self.status=format!("{}: {err}",tr("Error al importar")),
             }
@@ -637,17 +647,21 @@ impl LibraryUi {
         });
     }
     fn fetch_detail(&mut self,id:u64){
-        let Some(connection)=self.connection.clone() else {return;};
+        let Some(connection)=self.connection.clone() else{return;};
+        let Some(db_path)=self.local_db_path.clone() else{return;};
         if self.detail_rx.is_some(){return;}
         let (tx,rx)=mpsc::channel();
         self.detail_rx=Some(rx);
         thread::spawn(move||{
-            let result=library_lan::get_asset(&connection,id)
-                .map_err(|err|format!("{err:#}"));
+            let result=(||->anyhow::Result<_>{
+                let asset=library_lan::get_asset(&connection,id)?;
+                let state=library_lan::verified_local_state(&db_path,&asset)?;
+                Ok((asset,state))
+            })().map_err(|err|format!("{err:#}"));
             let _=tx.send(result);
         });
     }
-    fn start_import(&mut self,id:u64,selected:BTreeSet<u64>,
+    fn start_import(&mut self,id:u64,
         db_path:&Path,storage:&Path,covers:&Path){
         let Some(conn)=self.connection.clone() else{return;};
         if self.import_rx.is_some(){return;}
@@ -660,10 +674,38 @@ impl LibraryUi {
         self.import_rx=Some(rx);
         self.status=tr("Descargando y verificando archivos autorizados...").into();
         thread::spawn(move||{
-            let result=library_lan::import_asset(&conn,id,&selected,&db,&storage,&covers,&cancel)
+            let result=library_lan::import_asset(&conn,id,&db,&storage,&covers,&cancel)
                 .map_err(|err|format!("{err:#}"));
             let _=tx.send(result);
         });
+    }
+
+    /// Import confirmation is required even for updates to already-linked
+    /// BOOTH assets, because the old local versions must be preserved.
+    pub fn render_import_confirm(&mut self,ctx:&egui::Context,
+        db_path:&Path,storage:&Path,covers:&Path){
+        let Some(id)=self.pending_import else{return;};
+        let (name,count)=self.detail.as_ref().map(|asset|
+            (asset.title.clone(),asset.files.len())).unwrap_or_default();
+        let decision=confirmation_dialog(ctx,"remote-library-import",
+            "Importar ficha completa","Confirmar importación",
+            ConfirmTone::Primary,self.import_rx.is_none(),|ui|{
+                dialog_subject(ui,&name);
+                dialog_text(ui,tr(
+                    "Se comprobarán los archivos existentes y solo se descargarán los nuevos o cambiados."));
+                dialog_text(ui,tr(
+                    "La operación se confirma completa o no modifica la biblioteca. Los metadatos y versiones locales anteriores se conservan."));
+                ui.label(RichText::new(format!("{}: {count}",
+                    tr("Archivos de la ficha"))).size(12.5).color(colors().muted));
+            });
+        match decision {
+            ConfirmChoice::Accept=>{
+                self.pending_import=None;
+                self.start_import(id,db_path,storage,covers);
+            },
+            ConfirmChoice::Cancel=>self.pending_import=None,
+            ConfirmChoice::Pending=>{},
+        }
     }
 
     fn draw_cover(&self,ui:&mut egui::Ui,id:u64,width:f32,height:f32){
@@ -794,16 +836,22 @@ impl LibraryUi {
         ui.horizontal_wrapped(|ui|{
             ui.label(RichText::new(tr("Biblioteca remota (solo lectura)"))
                 .color(colors().accent).size(12.5));
-            if ui.add_enabled(self.import_rx.is_none(),
-                egui::Button::new(tr("Importar a mi biblioteca"))
+            let button_label=match self.detail_state{
+                RemoteLocalState::Complete=>"Ya está en mi biblioteca",
+                RemoteLocalState::NeedsUpdate(_)=>"Actualizar ficha completa",
+                _=>"Importar ficha completa",
+            };
+            if ui.add_enabled(self.import_rx.is_none()
+                && self.detail_state!=RemoteLocalState::Complete,
+                egui::Button::new(tr(button_label))
                     .min_size(egui::vec2(180.0,36.0))
                     .fill(colors().primary)).clicked(){
-                let all=asset.files.iter().map(|file|file.id).collect();
-                self.start_import(asset.id,all,db_path,storage,covers);
+                self.pending_import=Some(asset.id);
             }
-            if !asset.files.is_empty() && ui.add_enabled(self.import_rx.is_none(),
-                egui::Button::new(tr("Solo guardar ficha"))).clicked(){
-                self.start_import(asset.id,BTreeSet::new(),db_path,storage,covers);
+            if let RemoteLocalState::NeedsUpdate(files)=self.detail_state{
+                ui.label(RichText::new(format!("{}: {files}",
+                    tr("Archivos nuevos o modificados")))
+                    .color(colors().accent).size(12.0));
             }
             if self.import_rx.is_some(){
                 ui.spinner();
@@ -881,6 +929,7 @@ impl LibraryUi {
     /// No editing, deletion, favorite changes or database writes to the host.
     pub fn page(&mut self,ctx:&egui::Context,db_path:&Path,
         storage:&Path,covers:&Path){
+        self.local_db_path=Some(db_path.to_path_buf());
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(colors().bg)
                 .inner_margin(egui::Margin::symmetric(19,17)))
