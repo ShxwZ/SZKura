@@ -2,7 +2,7 @@
 //! Does not change the existing temporary one-product sharing feature.
 use eframe::egui::{self, RichText, TextureHandle};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, atomic::{AtomicBool,Ordering},mpsc::{self,Receiver}},
     thread,time::Duration,
@@ -19,6 +19,8 @@ use crate::{i18n::tr,theme::colors,ui_support::{
 }};
 
 const MAX_SELECTION:usize=2_000;
+const MAX_COVER_TEXTURES:usize=80;
+const COVER_BATCH:usize=8;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PublishMode {Exclude,Include}
 
@@ -101,6 +103,10 @@ pub struct LibraryUi {
     import_cancel:Arc<AtomicBool>,
     cover_rx:Option<Receiver<CoverReady>>,
     cover_textures:HashMap<u64,TextureHandle>,
+    cover_queue:VecDeque<u64>,
+    cover_inflight:BTreeSet<u64>,
+    cover_failed:BTreeSet<u64>,
+    cover_recent:VecDeque<u64>,
     status:String,
 }
 
@@ -125,7 +131,10 @@ impl Default for LibraryUi {
             detail_state:RemoteLocalState::Unknown,import_rx:None,pending_import:None,
             local_db_path:None,
             import_cancel:Arc::new(AtomicBool::new(false)),
-            cover_rx:None,cover_textures:HashMap::new(),status:String::new(),
+            cover_rx:None,cover_textures:HashMap::new(),
+            cover_queue:VecDeque::new(),cover_inflight:BTreeSet::new(),
+            cover_failed:BTreeSet::new(),cover_recent:VecDeque::new(),
+            status:String::new(),
         }
     }
 }
@@ -148,6 +157,10 @@ impl LibraryUi {
         self.connect_rx=None;
         self.cover_rx=None;
         self.cover_textures.clear();
+        self.cover_queue.clear();
+        self.cover_inflight.clear();
+        self.cover_failed.clear();
+        self.cover_recent.clear();
         self.connection=None;
         self.remote_page.items.clear();
         self.browse_parameters=None;
@@ -620,6 +633,10 @@ impl LibraryUi {
                     self.offset=0;
                     self.browse_parameters=None;
                     self.cover_textures.clear();
+                    self.cover_queue.clear();
+                    self.cover_inflight.clear();
+                    self.cover_failed.clear();
+                    self.cover_recent.clear();
                     self.cover_rx=None;
                     self.request_browse();
                     self.status=tr("Biblioteca remota conectada.").into();
@@ -632,7 +649,6 @@ impl LibraryUi {
                 Ok(page)=>{
                     if self.offset==0 {
                         self.remote_page=page;
-                        self.cover_textures.clear();
                     }else{
                         self.remote_page.total=page.total;
                         for item in page.items{
@@ -641,7 +657,7 @@ impl LibraryUi {
                             }
                         }
                     }
-                    self.start_covers();
+                    // Visible tiles enqueue only covers they actually need.
                 },
                 Err(err)=>self.status=format!("{}: {err}",tr("Error al cargar catálogo")),
             }
@@ -671,21 +687,31 @@ impl LibraryUi {
             loop {
                 match rx.try_recv() {
                     Ok(cover)=>{
-                        if let Some(image)=cover.image {
+                        self.cover_inflight.remove(&cover.id);
+                        if let Some(image)=cover.image{
                             let tex=ctx.load_texture(
                                 format!("szkura-remote-cover-{}",cover.id),image,
                                 egui::TextureOptions::LINEAR);
                             self.cover_textures.insert(cover.id,tex);
-                        }
+                            self.cover_recent.retain(|id|*id!=cover.id);
+                            self.cover_recent.push_back(cover.id);
+                            while self.cover_recent.len()>MAX_COVER_TEXTURES{
+                                if let Some(old)=self.cover_recent.pop_front(){
+                                    self.cover_textures.remove(&old);
+                                }
+                            }
+                        }else{self.cover_failed.insert(cover.id);}
                     },
                     Err(mpsc::TryRecvError::Empty)=>break,
                     Err(mpsc::TryRecvError::Disconnected)=>{
                         self.cover_rx=None;
+                        self.cover_inflight.clear();
                         break;
-                    }
+                    },
                 }
             }
         }
+        self.start_cover_batch();
         if self.remote_active && self.connection.is_some() && self.detail.is_none()
             && self.browse_rx.is_none() {
             if let Some((previous_search,previous_cat,previous_avatar,previous_files,
@@ -703,22 +729,29 @@ impl LibraryUi {
         }
         if self.host_load_rx.is_some() || self.host_rx.is_some() || self.connect_rx.is_some()
             || self.browse_rx.is_some() || self.detail_rx.is_some()
-            || self.import_rx.is_some() || self.cover_rx.is_some(){
+            || self.import_rx.is_some() || self.cover_rx.is_some()
+            || !self.cover_queue.is_empty(){
             ctx.request_repaint_after(Duration::from_millis(120));
         }
         None
     }
 
-    fn start_covers(&mut self){
+    fn start_cover_batch(&mut self){
+        if self.cover_rx.is_some(){return;}
         let Some(conn)=self.connection.clone() else{return;};
-        let ids:Vec<_>=self.remote_page.items.iter()
-            .filter(|item|item.has_cover && !self.cover_textures.contains_key(&item.id))
-            .map(|item|item.id).collect();
-        if ids.is_empty(){self.cover_rx=None;return;}
+        let mut ids=Vec::new();
+        while ids.len()<COVER_BATCH{
+            let Some(id)=self.cover_queue.pop_front() else{break;};
+            if self.cover_failed.contains(&id)
+                || self.cover_textures.contains_key(&id)
+                || !self.cover_inflight.insert(id){continue;}
+            ids.push(id);
+        }
+        if ids.is_empty(){return;}
         let (tx,rx)=mpsc::channel();
         self.cover_rx=Some(rx);
         thread::spawn(move||{
-            for id in ids {
+            for id in ids{
                 let image=library_lan::fetch_cover(&conn,id).ok().flatten()
                     .and_then(|bytes|library_lan::decode_cover_small(&bytes,360))
                     .map(|thumb|egui::ColorImage::from_rgba_unmultiplied(
@@ -821,7 +854,17 @@ impl LibraryUi {
         }
     }
 
-    fn draw_cover(&self,ui:&mut egui::Ui,id:u64,width:f32,height:f32){
+    fn draw_cover(&mut self,ui:&mut egui::Ui,id:u64,
+        has_cover:bool,width:f32,height:f32){
+        if self.cover_textures.contains_key(&id){
+            self.cover_recent.retain(|item|*item!=id);
+            self.cover_recent.push_back(id);
+        }else if has_cover && !self.cover_failed.contains(&id)
+            && !self.cover_inflight.contains(&id)
+            && !self.cover_queue.contains(&id){
+            self.cover_queue.push_back(id);
+            ui.ctx().request_repaint_after(Duration::from_millis(40));
+        }
         egui::Frame::new().fill(colors().faint_bg).corner_radius(8)
             .show(ui,|ui|{
                 if let Some(tex)=self.cover_textures.get(&id){
@@ -867,7 +910,7 @@ impl LibraryUi {
                     let inner=width-26.0;
                     ui.set_width(inner);
                     ui.set_min_height(302.0);
-                    self.draw_cover(ui,asset.id,inner,170.0);
+                    self.draw_cover(ui,asset.id,asset.has_cover,inner,170.0);
                     ui.add_space(9.0);
                     ui.add(egui::Label::new(RichText::new(&asset.title)
                         .strong().color(colors().text).size(16.0))
@@ -909,7 +952,7 @@ impl LibraryUi {
             .stroke(egui::Stroke::new(1.0,colors().stroke))
             .inner_margin(egui::Margin::symmetric(12,8)).show(ui,|ui|{
             ui.horizontal(|ui|{
-                self.draw_cover(ui,asset.id,76.0,64.0);
+                self.draw_cover(ui,asset.id,asset.has_cover,76.0,64.0);
                 ui.add_space(10.0);
                 ui.vertical(|ui|{
                     ui.set_width(if compact{
@@ -1040,7 +1083,7 @@ impl LibraryUi {
                 let content=ui.available_width();
                 let image_width=(content*0.4).min(482.0);
                 ui.horizontal_top(|ui|{
-                    self.draw_cover(ui,asset.id,image_width,320.0);
+                    self.draw_cover(ui,asset.id,asset.has_cover,image_width,320.0);
                     ui.add_space(20.0);
                     ui.vertical(|ui|{
                         ui.set_width((content-image_width-20.0).max(230.0));
@@ -1049,7 +1092,7 @@ impl LibraryUi {
                 });
             }else{
                 let width=ui.available_width().min(460.0);
-                self.draw_cover(ui,asset.id,width,260.0);
+                self.draw_cover(ui,asset.id,asset.has_cover,width,260.0);
                 ui.add_space(15.0);
                 draw_fields(ui);
             }
