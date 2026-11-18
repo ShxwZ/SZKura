@@ -1417,9 +1417,12 @@ mod tests {
         assert!(db.existing_remote_source(&incoming.origin_key).unwrap().is_none());
         // The prior file was moved into managed storage, then explicitly
         // removed by rollback when the second staged file was missing.
+        // The source remains in the caller-owned staging directory after
+        // rollback, but no file may be left in a managed product folder.
         let contents=walkdir::WalkDir::new(&root).into_iter()
             .filter_map(std::result::Result::ok)
-            .filter(|entry|entry.file_type().is_file())
+            .filter(|entry|entry.file_type().is_file()
+                && !entry.path().starts_with(stage.path()))
             .map(|entry|entry.path().to_path_buf()).collect::<Vec<_>>();
         assert!(contents.is_empty(), "{contents:?}");
     }
