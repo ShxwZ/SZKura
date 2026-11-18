@@ -81,6 +81,7 @@ pub struct LibraryUi {
     internet_access:bool,
     product_share_busy:bool,
     pending_tunnel_consent:bool,
+    pending_share_confirm:bool,
     invite_input:String,
     connection:Option<RemoteConnection>,
     connect_rx:Option<Receiver<Result<RemoteConnection,String>>>,
@@ -123,7 +124,7 @@ impl Default for LibraryUi {
             host_show_nsfw:false,host_selected_only:false,host_session:None,host_rx:None,
             host_cancel:Arc::new(AtomicBool::new(false)),host_status:String::new(),
             host_name:"Mi biblioteca compartida".into(),internet_access:false,product_share_busy:false,pending_tunnel_consent:false,
-            invite_input:String::new(),connection:None,connect_rx:None,
+            pending_share_confirm:false,invite_input:String::new(),connection:None,connect_rx:None,
             search:String::new(),category:String::new(),avatar_filter:String::new(),
             files_filter:FileFilter::All,show_nsfw:false,remote_grid:true,
             remote_page:RemotePage{total:0,items:Vec::new()},offset:0,
@@ -185,6 +186,8 @@ impl LibraryUi {
     }
 
     pub fn stop_share(&mut self){
+        self.pending_share_confirm=false;
+        self.pending_tunnel_consent=false;
         self.host_cancel.store(true,Ordering::Relaxed);
         self.host_session=None;
         self.host_status=tr("Biblioteca compartida detenida.").into();
@@ -211,7 +214,7 @@ impl LibraryUi {
     /// One sharing session at a time, including a pending Cloudflare install.
     pub fn host_busy(&self)->bool{
         self.host_session.is_some() || self.host_rx.is_some()
-            || self.pending_tunnel_consent
+            || self.pending_tunnel_consent || self.pending_share_confirm
     }
     pub fn set_product_share_busy(&mut self,busy:bool){self.product_share_busy=busy;}
     fn selection(&self)->ShareSelection{
@@ -524,7 +527,7 @@ impl LibraryUi {
         if ui.add_enabled(!self.product_share_busy && self.selection_count()>0,
             egui::Button::new(tr("Iniciar compartir biblioteca"))
                 .fill(colors().primary).min_size(egui::vec2(220.0,36.0))).clicked(){
-            self.request_start(db_path,data_dir);
+            self.pending_share_confirm=true;
         }
         if !self.host_status.is_empty(){
             ui.label(RichText::new(tr(&self.host_status))
@@ -566,6 +569,34 @@ impl LibraryUi {
         });
     }
     pub fn render_consent(&mut self,ctx:&egui::Context,db_path:&Path,data_dir:&Path){
+        if self.pending_share_confirm {
+            let count=self.selection_count();
+            let internet=self.internet_access;
+            let choice=confirmation_dialog(ctx,"shared-library-scope-consent",
+                "Confirmar biblioteca compartida","Publicar biblioteca",
+                ConfirmTone::Primary,!self.product_share_busy && count>0,|ui|{
+                    dialog_subject(ui,&format!("{}: {count}",
+                        tr("Fichas que se compartirán")));
+                    dialog_text(ui,tr(if internet{
+                        "Acceso por Internet mediante un enlace HTTPS temporal de Cloudflare."
+                    }else{
+                        "Acceso mediante HTTP en la red local de confianza."
+                    }));
+                    dialog_text(ui,tr(
+                        "Se compartirán todos los adjuntos de las fichas elegidas. Comprueba que sus licencias permitan redistribuirlos."));
+                    dialog_text(ui,tr(
+                        "Las fichas excluidas no aparecerán en el catálogo remoto."));
+                });
+            match choice {
+                ConfirmChoice::Accept=>{
+                    self.pending_share_confirm=false;
+                    self.request_start(db_path,data_dir);
+                },
+                ConfirmChoice::Cancel=>self.pending_share_confirm=false,
+                ConfirmChoice::Pending=>{},
+            }
+            return;
+        }
         if !self.pending_tunnel_consent{return;}
         let choice=confirmation_dialog(ctx,"shared-library-tunnel-consent",
             "Descargar Cloudflare Tunnel","Descargar y compartir",
