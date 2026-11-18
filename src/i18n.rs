@@ -377,6 +377,7 @@ pub fn translate(language:Language,s:&str)->&str {
         "Para cambiar los permisos, detén la sesión y vuelve a compartir."=>"To change permissions, stop sharing and start a new session.",
         "Preparando fichas y permisos..."=>"Preparing products and permissions...",
         "Resumen de publicación"=>"Sharing overview",
+        "Límites actuales por sesión"=>"Current session limits",
         "Fichas no compartidas"=>"Products not shared",
         "NSFW ocultas"=>"Hidden NSFW products",
         "Estimación basada en SQLite. Los filtros solo cambian lo que ves, no lo que se publicará."=>"Estimate from SQLite. Filters change what you see, not what you share.",
