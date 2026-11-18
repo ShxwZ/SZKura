@@ -58,6 +58,41 @@ pub struct NewAttachment<'a> {
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum RemoteFileState { Complete,NeedsUpdate(usize) }
 
+/// Already downloaded, SHA-256 and BLAKE3 verified under a tempdir
+/// inside the configured storage root. Only new/changed content is staged.
+pub struct RemoteStagedFile {
+    pub original_name:String,
+    pub source:std::path::PathBuf,
+    pub blake3:String,
+    pub bytes:u64,
+}
+pub struct RemoteImportRecord {
+    pub origin_key:String,
+    pub booth_url:String,
+    pub title:String,
+    pub category:String,
+    pub creator:String,
+    pub tags:String,
+    pub description:String,
+    pub avatars:Vec<String>,
+    pub nsfw:bool,
+    pub cover:Option<(std::path::PathBuf,String)>,
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct RemoteCommitReport {
+    pub asset_id:i64,
+    pub is_new:bool,
+    pub new_files:usize,
+}
+struct FileRollback {created:Vec<std::path::PathBuf>,committed:bool}
+impl Drop for FileRollback {
+    fn drop(&mut self){
+        if !self.committed {
+            for path in &self.created {let _=fs::remove_file(path);}
+        }
+    }
+}
+
 pub struct Catalog { conn: Connection }
 
 impl Catalog {
@@ -613,6 +648,136 @@ impl Catalog {
         }
         Ok(if pending==0{RemoteFileState::Complete}
             else{RemoteFileState::NeedsUpdate(pending)})
+    }
+
+    /// Single transaction for all metadata / file relationships. Every file
+    /// is fully downloaded and verified before calling this method. Old local
+    /// records, filenames and physical versions are NEVER overwritten/deleted.
+    /// Any error rolls back all SQLite mutations and removes newly moved files.
+    pub fn commit_remote_import(&mut self,root:&Path,covers_dir:&Path,
+        record:&RemoteImportRecord,staged:&[RemoteStagedFile])
+        ->Result<RemoteCommitReport>{
+        if record.title.trim().is_empty() || record.title.len()>512
+            || !CATEGORIES.contains(&record.category.as_str())
+            || record.origin_key.len()!=64
+            || !record.origin_key.bytes().all(|b|b.is_ascii_hexdigit()){
+            bail!("Metadatos remotos inválidos");
+        }
+        let configured=self.storage_root()?.context("Configura la carpeta principal de assets")?;
+        let root=fs::canonicalize(root)?;
+        if root!=configured{bail!("La carpeta principal de assets ha cambiado");}
+        let already=self.resolve_remote_product(&record.origin_key,&record.booth_url)?;
+        let existing_asset=if let Some(id)=already{self.get(id)?}else{None};
+        if already.is_some() && existing_asset.is_none(){bail!("Ficha destino no disponible");}
+        // Retain a rollback guard across transaction commit. Existing managed
+        // files are validated and reused; never overwritten or removed.
+        let mut rollback=FileRollback{created:Vec::new(),committed:false};
+        let tx=self.conn.transaction()?;
+        let id=if let Some(id)=already{id}else{
+            tx.execute("INSERT INTO assets(title,category,creator,tags,description,booth_url)
+                VALUES(?1,?2,?3,?4,?5,?6)",
+                params![record.title,record.category,record.creator,record.tags,
+                    record.description,record.booth_url])?;
+            let id=tx.last_insert_rowid();
+            if record.nsfw{
+                tx.execute("INSERT INTO asset_content_flags(asset_id,nsfw) VALUES(?1,1)",
+                    [id])?;
+            }
+            let mut statement=tx.prepare("INSERT OR IGNORE INTO asset_avatars(
+                asset_id,avatar_name) VALUES(?1,?2)")?;
+            for name in &record.avatars{
+                for normalized in Self::normalize_avatar_names(name){
+                    statement.execute(params![id,normalized])?;
+                }
+            }
+            id
+        };
+        let make_safe=|text:&str,limit:usize|{
+            let cleaned=text.chars().map(|c|if c.is_alphanumeric()
+                || matches!(c,'_'|'-'|'.'){c}else{'_'})
+                .take(limit).collect::<String>();
+            if cleaned.is_empty(){"asset".to_owned()}else{cleaned}
+        };
+        let title=existing_asset.as_ref().map(|a|a.title.as_str())
+            .unwrap_or(&record.title);
+        let category=existing_asset.as_ref().map(|a|a.category.as_str())
+            .unwrap_or(&record.category);
+        let folder=root.join(make_safe(category,36))
+            .join(format!("{id:08}-{}",make_safe(title,44)));
+        fs::create_dir_all(&folder)?;
+        let folder=fs::canonicalize(&folder)?;
+        if !folder.starts_with(&root){bail!("Destino fuera del almacén de assets");}
+        let mut new_files=0usize;
+        for file in staged {
+            if file.bytes>8*1024*1024*1024 || file.original_name.len()>200
+                || file.original_name.contains(['/', '\\', ':'])
+                || file.blake3.len()!=64 || !file.blake3.bytes().all(|x|x.is_ascii_hexdigit()){
+                bail!("Adjunto remoto no válido");
+            }
+            let meta=fs::symlink_metadata(&file.source)?;
+            if !meta.is_file() || meta.file_type().is_symlink() || meta.len()!=file.bytes{
+                bail!("Archivo descargado ausente o alterado");
+            }
+            let identical:Option<i64>=tx.query_row(
+                "SELECT id FROM attachments WHERE asset_id=?1 AND checksum=?2",
+                params![id,file.blake3],|row|row.get(0)).optional()?;
+            if identical.is_some(){continue;}
+            let target=folder.join(format!("{}-{}",
+                &file.blake3[..16],make_safe(&file.original_name,85)));
+            if target.exists(){
+                // Content-addressed targets must never be overwritten. A
+                // collision or changed local copy aborts the whole operation.
+                let mut source=fs::File::open(&target)?;
+                let mut hash=blake3::Hasher::new();
+                let mut bytes=0u64;
+                let mut buffer=[0u8;128*1024];
+                loop {
+                    let count=std::io::Read::read(&mut source,&mut buffer)?;
+                    if count==0{break;}
+                    hash.update(&buffer[..count]);
+                    bytes+=count as u64;
+                }
+                if bytes!=file.bytes || hash.finalize().to_hex().as_str()!=file.blake3{
+                    bail!("Un archivo local con el mismo nombre fue modificado");
+                }
+            }else{
+                fs::rename(&file.source,&target)
+                    .context("No se pudo incorporar el archivo verificado")?;
+                rollback.created.push(target.clone());
+            }
+            tx.execute("INSERT INTO attachments(
+                asset_id,original_name,stored_path,checksum,bytes,file_count,storage_mode)
+                VALUES(?1,?2,?3,?4,?5,0,'copy')",
+                params![id,file.original_name,target.to_string_lossy().as_ref(),
+                    file.blake3,i64::try_from(file.bytes)?])?;
+            new_files+=1;
+        }
+        tx.execute("INSERT OR IGNORE INTO managed_folders(asset_id,folder_path)
+            VALUES(?1,?2)",params![id,folder.to_string_lossy().as_ref()])?;
+        if already.is_none(){
+            if let Some((path,extension))=&record.cover{
+                if !matches!(extension.as_str(),"jpg"|"jpeg"|"png"|"webp"){
+                    bail!("Portada remota no válida");
+                }
+                let bytes=fs::read(path)?;
+                if bytes.len()>8*1024*1024 {bail!("Portada remota demasiado grande");}
+                fs::create_dir_all(covers_dir)?;
+                let name=format!("remote-{}.{}",blake3::hash(&bytes).to_hex(),extension);
+                let final_cover=covers_dir.join(name);
+                if !final_cover.exists(){
+                    fs::rename(path,&final_cover)?;
+                    rollback.created.push(final_cover.clone());
+                }
+                tx.execute("UPDATE assets SET image_path=?1 WHERE id=?2",
+                    params![final_cover.to_string_lossy().as_ref(),id])?;
+            }
+        }
+        tx.execute("INSERT INTO imported_library_sources(origin_key,asset_id)
+            VALUES(?1,?2) ON CONFLICT(origin_key) DO UPDATE SET asset_id=excluded.asset_id",
+            params![record.origin_key,id])?;
+        tx.commit()?;
+        rollback.committed=true;
+        Ok(RemoteCommitReport{asset_id:id,is_new:already.is_none(),new_files})
     }
 
     pub fn exists_checksum(&self, checksum: &str) -> Result<bool> {
