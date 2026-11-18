@@ -1225,108 +1225,191 @@ impl LibraryUi {
             }
         });
     }
-    fn detail_view(&mut self,ui:&mut egui::Ui,asset:&RemoteAsset,
-        db_path:&Path,storage:&Path,covers:&Path){
-        ui.horizontal_wrapped(|ui|{
-            if action(ui,Icon::Back,"Volver al catálogo remoto",true){
-                self.detail=None;
-                return;
-            }
-            ui.add_space(8.0);
-            ui.label(RichText::new(&asset.title)
-                .strong().size(23.0).color(colors().text));
+    /// Read-only product fields follow the native editor's spacing and labels.
+    fn readonly_field(ui:&mut egui::Ui,label:&str,value:&str){
+        ui.vertical(|ui|{
+            ui.spacing_mut().item_spacing.y=5.0;
+            ui.label(RichText::new(tr(label)).color(colors().muted).size(13.0));
+            egui::Frame::new().fill(colors().panel)
+                .stroke(egui::Stroke::new(1.0,colors().stroke))
+                .corner_radius(8).inner_margin(egui::Margin::symmetric(11,9))
+                .show(ui,|ui|{
+                    ui.set_width(ui.available_width().max(1.0));
+                    ui.add(egui::Label::new(RichText::new(if value.is_empty(){
+                        "—"
+                    }else{value}).size(13.0).color(colors().text)).wrap());
+                });
         });
+    }
+    fn detail_cover_section(&mut self,ui:&mut egui::Ui,asset:&RemoteAsset){
+        let width=ui.available_width().min(480.0).max(1.0);
+        ui.label(RichText::new(tr("PORTADA")).color(colors().accent)
+            .strong().size(12.0));
         ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui|{
-            ui.label(RichText::new(tr("Biblioteca remota (solo lectura)"))
-                .color(colors().accent).size(12.5));
-            let button_label=match self.detail_state{
-                RemoteLocalState::Complete=>"Ya está en mi biblioteca",
-                RemoteLocalState::NeedsUpdate(_)=>"Actualizar ficha completa",
-                _=>"Importar ficha completa",
-            };
-            if ui.add_enabled(self.import_rx.is_none()
-                && self.detail_state!=RemoteLocalState::Complete,
-                egui::Button::new(tr(button_label))
-                    .min_size(egui::vec2(180.0,36.0))
-                    .fill(colors().primary)).clicked(){
-                self.pending_import=Some(asset.id);
+        egui::Frame::new().fill(colors().panel)
+            .stroke(egui::Stroke::new(1.0,colors().stroke))
+            .corner_radius(10).inner_margin(10).show(ui,|ui|{
+                let inner=(width-20.0).max(1.0);
+                ui.set_width(inner);
+                self.draw_cover(ui,asset.id,asset.has_cover,inner,250.0);
+            });
+        if !asset.booth_url.is_empty(){
+            ui.add_space(8.0);
+            ui.hyperlink_to(tr("Abrir producto en BOOTH"),&asset.booth_url);
+        }
+        ui.add_space(15.0);
+        crate::product_summary_card(ui,width,asset.files.len(),&asset.avatars.join(", "));
+    }
+    fn detail_fields_section(ui:&mut egui::Ui,asset:&RemoteAsset){
+        ui.spacing_mut().item_spacing.y=12.0;
+        ui.label(RichText::new(tr("INFORMACIÓN")).color(colors().accent)
+            .strong().size(12.0));
+        ui.add_space(6.0);
+        Self::readonly_field(ui,"Enlace de BOOTH",&asset.booth_url);
+        Self::readonly_field(ui,"Nombre del producto",&asset.title);
+        if ui.available_width()>=550.0{
+            ui.columns(2,|cols|{
+                Self::readonly_field(&mut cols[0],"Creador / tienda",&asset.creator);
+                Self::readonly_field(&mut cols[1],"Categoría",tr(&asset.category));
+            });
+        }else{
+            Self::readonly_field(ui,"Creador / tienda",&asset.creator);
+            Self::readonly_field(ui,"Categoría",tr(&asset.category));
+        }
+        Self::readonly_field(ui,"Avatares compatibles",&asset.avatars.join(", "));
+        Self::readonly_field(ui,"Otras etiquetas",&asset.tags);
+        if asset.nsfw{
+            ui.label(RichText::new("NSFW").strong().color(colors().accent).size(12.0));
+        }
+        ui.label(RichText::new(tr("Descripción")).strong()
+            .color(colors().text).size(14.0));
+        if !asset.description.is_empty(){
+            egui::Frame::new().fill(colors().panel)
+                .stroke(egui::Stroke::new(1.0,colors().stroke))
+                .corner_radius(8).inner_margin(12).show(ui,|ui|{
+                    ui.add(egui::Label::new(RichText::new(&asset.description)
+                        .size(13.0).color(colors().text)).wrap());
+                });
+        }else{
+            ui.label(RichText::new("—").size(13.0).color(colors().muted));
+        }
+    }
+    fn detail_import_action(&mut self,ui:&mut egui::Ui,asset:&RemoteAsset){
+        let label=match self.detail_state{
+            RemoteLocalState::Complete=>"Ya está en mi biblioteca",
+            RemoteLocalState::NeedsUpdate(_)=>"Actualizar ficha completa",
+            _=>"Importar ficha completa",
+        };
+        if ui.add_enabled(self.import_rx.is_none()
+            && self.detail_state!=RemoteLocalState::Complete,
+            egui::Button::new(tr(label)).fill(colors().primary)
+                .min_size(egui::vec2(180.0,36.0))).clicked(){
+            // The importer independently re-verifies all bytes and hashes.
+            self.pending_import=Some(asset.id);
+        }
+    }
+    fn detail_view(&mut self,ui:&mut egui::Ui,asset:&RemoteAsset){
+        let verifying=self.detail_verify_rx.is_some();
+        let compact=ui.available_width()<800.0;
+        ui.horizontal(|ui|{
+            if action(ui,Icon::Back,"Volver al catálogo remoto",false){
+                self.close_detail();
             }
-            if let RemoteLocalState::NeedsUpdate(files)=self.detail_state{
-                ui.label(RichText::new(format!("{}: {files}",
-                    tr("Archivos nuevos o modificados")))
-                    .color(colors().accent).size(12.0));
+            ui.add_space(12.0);
+            icon(ui,Icon::File,colors().accent,22.0);
+            ui.label(RichText::new(tr("Ficha del producto"))
+                .strong().size(23.0).color(colors().text));
+            if !compact{
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                    self.detail_import_action(ui,asset);
+                });
             }
-            if self.import_rx.is_some(){
+        });
+        if compact{
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui|self.detail_import_action(ui,asset));
+        }
+        ui.add_space(3.0);
+        ui.label(RichText::new(format!("{}  /  {}",
+            tr("Biblioteca remota (solo lectura)"),asset.title))
+            .size(13.0).color(colors().muted));
+        if verifying{
+            ui.horizontal(|ui|{
+                ui.spinner();
+                ui.label(RichText::new(tr("Verificando archivos locales en segundo plano..."))
+                    .size(12.0).color(colors().muted));
+            });
+        }else if let RemoteLocalState::NeedsUpdate(files)=self.detail_state{
+            ui.label(RichText::new(format!("{}: {files}",
+                tr("Archivos nuevos o modificados")))
+                .color(colors().accent).size(12.0));
+        }
+        if self.import_rx.is_some(){
+            ui.horizontal(|ui|{
                 ui.spinner();
                 if ui.button(tr("Cancelar descarga")).clicked(){
                     self.import_cancel.store(true,Ordering::Relaxed);
                 }
-            }
-        });
-        ui.separator();ui.add_space(12.0);
+            });
+        }
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(11.0);
         egui::ScrollArea::vertical().id_salt("remote-detail-scroll")
-            .show(ui,|ui|{
-            let wide=ui.available_width()>=940.0;
-            let draw_fields=|ui:&mut egui::Ui|{
-                ui.label(RichText::new(format!("{} · {}",
-                    asset.creator,tr(&asset.category)))
-                    .color(colors().muted).size(13.0));
-                if !asset.booth_url.is_empty(){
-                    ui.hyperlink_to(tr("Abrir producto en BOOTH"),&asset.booth_url);
+            .auto_shrink([false,false]).show(ui,|ui|{
+                if crate::editor_two_columns(ui.available_width()){
+                    let left=crate::editor_cover_column_width(ui.available_width());
+                    ui.horizontal_top(|ui|{
+                        ui.allocate_ui_with_layout(egui::vec2(left,0.0),
+                            egui::Layout::top_down(egui::Align::Min),|ui|{
+                                self.detail_cover_section(ui,asset);
+                            });
+                        ui.add_space(20.0);
+                        let remaining=ui.available_width().max(1.0);
+                        ui.allocate_ui_with_layout(egui::vec2(remaining,0.0),
+                            egui::Layout::top_down(egui::Align::Min),|ui|{
+                                Self::detail_fields_section(ui,asset);
+                            });
+                    });
+                }else{
+                    self.detail_cover_section(ui,asset);
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(12.0);
+                    Self::detail_fields_section(ui,asset);
                 }
-                if !asset.avatars.is_empty(){
-                    ui.label(RichText::new(format!("{}: {}",
-                        tr("Avatares compatibles"),asset.avatars.join(", ")))
-                        .color(colors().accent).size(13.0));
-                }
-                if !asset.tags.is_empty(){
-                    ui.label(RichText::new(format!("{}: {}",
-                        tr("Otras etiquetas"),asset.tags))
-                        .size(12.5).color(colors().muted));
-                }
-                ui.add_space(12.0);
-                if !asset.description.is_empty(){
-                    ui.label(RichText::new(tr("Descripción")).strong().size(17.0));
-                    ui.label(RichText::new(&asset.description)
-                        .size(13.0).color(colors().text));
-                }
-                ui.add_space(15.0);
+                ui.add_space(21.0);
                 ui.separator();
-                ui.label(RichText::new(tr("Archivos vinculados"))
-                    .strong().size(17.0));
+                ui.add_space(12.0);
+                ui.horizontal(|ui|{
+                    icon(ui,Icon::Archive,colors().accent,19.0);
+                    ui.label(RichText::new(format!("{} ({})",
+                        tr("Archivos vinculados"),asset.files.len()))
+                        .strong().color(colors().text).size(18.0));
+                });
+                ui.add_space(8.0);
                 if asset.files.is_empty(){
                     ui.label(RichText::new(tr("Sin archivos"))
-                        .color(colors().muted).size(12.5));
+                        .color(colors().muted).size(13.0));
                 }
                 for file in &asset.files{
-                    ui.horizontal_wrapped(|ui|{
-                        icon(ui,Icon::Archive,colors().muted,16.0);
-                        ui.label(RichText::new(&file.name)
-                            .size(12.5).color(colors().text));
-                        ui.label(RichText::new(crate::human_size(file.size as i64))
-                            .size(11.5).color(colors().muted));
-                    });
+                    egui::Frame::new().fill(colors().panel)
+                        .stroke(egui::Stroke::new(1.0,colors().stroke))
+                        .corner_radius(10).inner_margin(14).show(ui,|ui|{
+                            ui.horizontal_wrapped(|ui|{
+                                icon(ui,Icon::Archive,colors().accent,19.0);
+                                ui.add_space(4.0);
+                                ui.add(egui::Label::new(RichText::new(&file.name)
+                                    .strong().color(colors().text).size(13.0)).truncate())
+                                    .on_hover_text(&file.name);
+                                ui.label(RichText::new(
+                                    crate::human_size(file.size.min(i64::MAX as u64) as i64))
+                                    .size(12.0).color(colors().muted));
+                            });
+                        });
+                    ui.add_space(5.0);
                 }
-            };
-            if wide{
-                let content=ui.available_width();
-                let image_width=(content*0.4).min(482.0);
-                ui.horizontal_top(|ui|{
-                    self.draw_cover(ui,asset.id,asset.has_cover,image_width,320.0);
-                    ui.add_space(20.0);
-                    ui.vertical(|ui|{
-                        ui.set_width((content-image_width-20.0).max(230.0));
-                        draw_fields(ui);
-                    });
-                });
-            }else{
-                let width=ui.available_width().min(460.0);
-                self.draw_cover(ui,asset.id,asset.has_cover,width,260.0);
-                ui.add_space(15.0);
-                draw_fields(ui);
-            }
-        });
+            });
     }
 
     /// Remote pages reuse the local library's visual language and filters.
@@ -1341,21 +1424,18 @@ impl LibraryUi {
             if let Some(info)=self.connection.as_ref().map(|connection|connection.info.clone()){
                 egui::Frame::new().fill(colors().panel)
                     .stroke(egui::Stroke::new(1.0,colors().accent))
-                    .corner_radius(10).inner_margin(12).show(ui,|ui|{
+                    .corner_radius(8).inner_margin(egui::Margin::symmetric(12,7))
+                    .show(ui,|ui|{
                         ui.horizontal_wrapped(|ui|{
-                            icon(ui,Icon::Link,colors().accent,20.0);
-                            ui.vertical(|ui|{
-                                ui.label(RichText::new(format!("{} {}",tr("Explorando biblioteca:"),
-                                    info.name)).strong().size(15.0).color(colors().accent));
-                                ui.label(RichText::new(tr(
-                                    "Catálogo ajeno en solo lectura. Importar no modifica la biblioteca anfitriona."))
-                                    .size(12.0).color(colors().muted));
-                            });
+                            icon(ui,Icon::Link,colors().accent,16.0);
+                            ui.label(RichText::new(format!("{} {}",
+                                tr("Explorando biblioteca:"),info.name))
+                                .strong().size(13.0).color(colors().accent));
                             ui.label(RichText::new(tr("Solo lectura"))
-                                .size(12.0).color(colors().accent));
+                                .size(12.0).color(colors().muted));
                         });
                     });
-                ui.add_space(12.0);
+                ui.add_space(10.0);
             }
             if self.connection.is_none(){
                 ui.label(RichText::new(tr("Conectar a biblioteca"))
@@ -1374,8 +1454,24 @@ impl LibraryUi {
                     self.start_connect();
                 }
                 if self.connect_rx.is_some(){ui.spinner();}
+            }else if self.detail_pending_id.is_some(){
+                ui.horizontal(|ui|{
+                    if action(ui,Icon::Back,"Volver al catálogo remoto",false){
+                        self.close_detail();
+                    }
+                    ui.add_space(12.0);
+                    icon(ui,Icon::File,colors().accent,22.0);
+                    ui.label(RichText::new(tr("Ficha del producto"))
+                        .strong().size(23.0).color(colors().text));
+                });
+                ui.add_space(20.0);
+                ui.horizontal(|ui|{
+                    ui.spinner();
+                    ui.label(RichText::new(tr("Cargando ficha remota..."))
+                        .size(13.0).color(colors().muted));
+                });
             }else if let Some(asset)=self.detail.clone(){
-                self.detail_view(ui,&asset,db_path,storage,covers);
+                self.detail_view(ui,&asset);
             }else{
                 let name=self.connection.as_ref().unwrap().info.name.clone();
                 ui.horizontal(|ui|{
@@ -1411,8 +1507,11 @@ impl LibraryUi {
                         self.remote_page.total))
                         .color(colors().muted).size(12.5));
                     if self.browse_rx.is_some(){ui.spinner();}
-                    ui.label(RichText::new(tr("Los productos se cargan al desplazarse"))
-                        .size(11.5).color(colors().muted));
+                    if !self.cover_failed.is_empty()
+                        && ui.button(tr("Reintentar portadas")).clicked(){
+                        self.cover_failed.clear();
+                        ui.ctx().request_repaint();
+                    }
                 });
                 if self.remote_page.items.is_empty() && self.browse_rx.is_none(){
                     ui.vertical_centered(|ui|{
