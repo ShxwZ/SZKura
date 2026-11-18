@@ -24,6 +24,23 @@ const COVER_BATCH:usize=8;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PublishMode {Exclude,Include}
 
+/// Preview computed from SQLite's attachment counts and byte totals.
+/// These are estimates only: no archive data is read while selecting.
+#[derive(Clone,Copy,Default,Debug,PartialEq,Eq)]
+pub struct PublicationPreview {
+    pub visible:usize,
+    pub files:u64,
+    pub bytes:u64,
+    pub hidden:usize,
+    pub hidden_nsfw:usize,
+}
+impl PublicationPreview {
+    pub fn over_limit(self)->bool {
+        self.files>library_lan::MAX_FILES as u64
+            || self.bytes>library_lan::MAX_TOTAL_BYTES
+    }
+}
+
 struct CoverReady {
     id:u64,
     image:Option<egui::ColorImage>,
@@ -228,7 +245,64 @@ impl LibraryUi {
                 PublishMode::Include=>self.host_included.contains(&asset.id),
             }).map(|asset|asset.id).collect()}
     }
-    pub fn selection_count(&self)->usize{self.selection().products.len()}
+    pub fn selection_count(&self)->usize{self.publication_preview().visible}
+    /// Counts ALL published products, not just the current filtered page.
+    pub fn publication_preview(&self)->PublicationPreview {
+        let mut preview=PublicationPreview::default();
+        for asset in &self.host_products {
+            if self.selected(asset.id) {
+                preview.visible+=1;
+                preview.files=preview.files.saturating_add(asset.attachments.max(0) as u64);
+                preview.bytes=preview.bytes.saturating_add(asset.total_bytes.max(0) as u64);
+            }else{
+                preview.hidden+=1;
+                if asset.nsfw && !self.host_publish_nsfw {
+                    preview.hidden_nsfw+=1;
+                }
+            }
+        }
+        preview
+    }
+    /// The summary stays visible in Settings and above the picker grid.
+    pub fn publication_preview_ui(&self,ui:&mut egui::Ui){
+        let preview=self.publication_preview();
+        egui::Frame::new().fill(colors().card)
+            .stroke(egui::Stroke::new(1.0,colors().stroke))
+            .corner_radius(10).inner_margin(12).show(ui,|ui|{
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(tr("Resumen de publicación"))
+                    .strong().size(14.0).color(colors().text));
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui|{
+                    ui.label(RichText::new(format!("{} {}",preview.visible,tr("fichas")))
+                        .strong().size(16.0).color(colors().accent));
+                    ui.label(RichText::new(" · ").color(colors().muted));
+                    ui.label(RichText::new(format!("{} {}",preview.files,tr("archivos")))
+                        .strong().size(16.0).color(colors().text));
+                    ui.label(RichText::new(" · ").color(colors().muted));
+                    ui.label(RichText::new(format!("≈ {}",
+                        crate::human_size(preview.bytes.min(i64::MAX as u64) as i64)))
+                        .strong().size(16.0).color(colors().text));
+                });
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("{}: {} · {}: {}",
+                    tr("Fichas no compartidas"),preview.hidden,
+                    tr("NSFW ocultas"),preview.hidden_nsfw))
+                    .size(12.0).color(colors().muted));
+                ui.label(RichText::new(tr(
+                    "Estimación basada en SQLite. Los filtros solo cambian lo que ves, no lo que se publicará."))
+                    .size(11.5).color(colors().muted));
+                if preview.over_limit(){
+                    ui.label(RichText::new(format!("{}: {} {} / {} · {} {} / {}",
+                        tr("Selección supera los límites"),preview.files,tr("archivos"),
+                        library_lan::MAX_FILES,
+                        crate::human_size(preview.bytes.min(i64::MAX as u64) as i64),
+                        tr("de"),
+                        crate::human_size(library_lan::MAX_TOTAL_BYTES as i64)))
+                        .strong().size(12.0).color(colors().accent));
+                }
+            });
+    }
     pub fn selected(&self,id:i64)->bool{
         self.host_product_ids.contains(&id)
             && (self.host_publish_nsfw || !self.host_sensitive_ids.contains(&id))
@@ -445,6 +519,9 @@ impl LibraryUi {
                 .color(colors().accent).strong());
             ui.label(RichText::new(format!("{}: {}",tr("Adjuntos descargables"),session.downloadable))
                 .color(colors().muted));
+            ui.label(RichText::new(format!("{}: ≈ {}",tr("Tamaño total compartido"),
+                crate::human_size(session.total_bytes.min(i64::MAX as u64) as i64)))
+                .color(colors().muted));
             let mut view=invitation.clone();
             ui.add(egui::TextEdit::singleline(&mut view)
                 .desired_width(ui.available_width()).interactive(false));
@@ -501,8 +578,7 @@ impl LibraryUi {
                 egui::Button::new(tr("Actualizar lista de productos")))
                 .clicked(){self.load_host_products(db_path);}
         });
-        ui.label(RichText::new(format!("{}: {}",tr("Fichas que se compartirán"),
-            self.selection_count())).color(colors().accent).size(13.0));
+        self.publication_preview_ui(ui);
         ui.add_space(6.0);
         ui.label(RichText::new(tr("Nombre que verá el visitante"))
             .size(12.5).color(colors().muted));
@@ -526,7 +602,8 @@ impl LibraryUi {
                 .color(colors().accent).size(12.0));
         }
         ui.add_space(9.0);
-        if ui.add_enabled(!self.product_share_busy && self.selection_count()>0,
+        if ui.add_enabled(!self.product_share_busy && self.selection_count()>0
+            && !self.publication_preview().over_limit(),
             egui::Button::new(tr("Iniciar compartir biblioteca"))
                 .fill(colors().primary).min_size(egui::vec2(220.0,36.0))).clicked(){
             self.pending_share_confirm=true;
@@ -540,6 +617,10 @@ impl LibraryUi {
         if self.product_share_busy || self.host_busy(){return;}
         if self.selection_count()==0{
             self.host_status=tr("Selecciona al menos una ficha.").into();
+            return;
+        }
+        if self.publication_preview().over_limit(){
+            self.host_status=tr("Selección supera los límites").into();
             return;
         }
         if self.internet_access && !share_transfer::component_present(data_dir){
@@ -572,13 +653,18 @@ impl LibraryUi {
     }
     pub fn render_consent(&mut self,ctx:&egui::Context,db_path:&Path,data_dir:&Path){
         if self.pending_share_confirm {
-            let count=self.selection_count();
+            let preview=self.publication_preview();
+            let count=preview.visible;
             let internet=self.internet_access;
             let choice=confirmation_dialog(ctx,"shared-library-scope-consent",
                 "Confirmar biblioteca compartida","Publicar biblioteca",
-                ConfirmTone::Primary,!self.product_share_busy && count>0,|ui|{
+                ConfirmTone::Primary,!self.product_share_busy && count>0
+                    && !preview.over_limit(),|ui|{
                     dialog_subject(ui,&format!("{}: {count}",
                         tr("Fichas que se compartirán")));
+                    dialog_text(ui,&format!("{} {} · ≈ {}",
+                        preview.files,tr("archivos"),
+                        crate::human_size(preview.bytes.min(i64::MAX as u64) as i64)));
                     dialog_text(ui,tr(if internet{
                         "Acceso por Internet mediante un enlace HTTPS temporal de Cloudflare."
                     }else{
