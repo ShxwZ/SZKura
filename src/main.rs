@@ -55,6 +55,21 @@ impl AppPaths {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CatalogView { Grid, List }
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum SettingsSection {Storage,Appearance,Backup,Sharing,Updates}
+impl SettingsSection {
+    const ALL:[Self;5]=[Self::Storage,Self::Appearance,Self::Backup,
+        Self::Sharing,Self::Updates];
+    fn title(self)->&'static str {
+        match self{
+            Self::Storage=>"Almacenamiento",
+            Self::Appearance=>"Apariencia e idioma",
+            Self::Backup=>"Copia de seguridad",
+            Self::Sharing=>"Compartir biblioteca",
+            Self::Updates=>"Actualizaciones",
+        }
+    }
+}
 
 struct JobResult { message:String, select_id:Option<i64> }
 struct JobFinished { message:String, select_id:Option<i64>, ok:bool }
@@ -92,6 +107,7 @@ struct BoothApp {
     ui_language: Language,
     configured: bool,
     show_settings: bool,
+    settings_section:SettingsSection,
     setup_path: String,
     delete_sources: bool,
     confirm_new_import: bool,
@@ -184,7 +200,8 @@ impl BoothApp {
             last_filters:(String::new(),String::new(),String::new(),FileFilter::All,false,false),
             favorites_only:false,favorites_dirty:false,show_nsfw:false,
             catalog_view:CatalogView::Grid,ui_palette,ui_language,
-            configured,show_settings:!configured,setup_path:storage
+            configured,show_settings:!configured,
+            settings_section:SettingsSection::Storage,setup_path:storage
                 .as_ref().map(|p|p.display().to_string()).unwrap_or_default(),
             delete_sources,confirm_new_import:false,pending_managed_link:None,
             pending_restore:None,restore_in_flight:false,
@@ -1967,9 +1984,34 @@ impl BoothApp {
                 });
                 ui.add_space(8.0);
                 ui.separator();
+                if self.configured {
+                    ui.add_space(10.0);
+                    ui.horizontal_wrapped(|ui|{
+                        for section in SettingsSection::ALL {
+                            if ui.add_sized([if section==SettingsSection::Appearance {
+                                    154.0
+                                }else{137.0},36.0],
+                                egui::Button::new(tr(section.title()))
+                                    .corner_radius(8)
+                                    .fill(if self.settings_section==section {
+                                        colors().card
+                                    }else{colors().panel})
+                                    .stroke(egui::Stroke::new(
+                                        if self.settings_section==section{2.0}else{1.0},
+                                        if self.settings_section==section{
+                                            colors().accent
+                                        }else{colors().stroke}
+                                    ))).clicked(){
+                                self.settings_section=section;
+                            }
+                        }
+                    });
+                }
                 ui.add_space(10.0);
-                egui::ScrollArea::vertical().id_salt("settings-scroll")
+                egui::ScrollArea::vertical()
+                    .id_salt(("settings-scroll",self.settings_section as u8))
                     .auto_shrink([false,false]).show(ui,|ui|{
+                if !self.configured || self.settings_section==SettingsSection::Storage {
                 ui.add_space(8.0);
                 ui.label(RichText::new(tr("Antes de añadir productos o archivos, elige una carpeta para guardar tus assets organizados. Esta ruta se conserva en SQLite.")
                 ).size(14.0).color(colors().text));
@@ -1991,7 +2033,9 @@ impl BoothApp {
                 ).color(colors().muted));
                 ui.label(RichText::new(tr("Al cambiar la carpeta principal, los archivos ya gestionados mantienen sus rutas hasta que uses Organizar existentes.")
                 ).color(colors().muted).size(12.0));
-                ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                }
+                if self.configured && self.settings_section==SettingsSection::Appearance {
+                ui.add_space(8.0);
                 ui.label(RichText::new(tr("Paleta de colores")).strong().size(17.0));
                 ui.label(RichText::new(tr("Cambia la apariencia de toda la app. Tu elección se guarda para el siguiente inicio.")
                 ).color(colors().muted).size(12.5));
@@ -2052,7 +2096,9 @@ impl BoothApp {
                 ).color(colors().muted).size(12.0));
                 ui.hyperlink_to(tr("Solicitar otro idioma"),
                     "https://github.com/ShxwZ/SZKura/issues/new");
-                ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                }
+                if self.configured && self.settings_section==SettingsSection::Backup {
+                ui.add_space(8.0);
                 ui.label(RichText::new(tr("Copia de seguridad de la biblioteca"))
                     .strong().size(17.0));
                 ui.label(RichText::new(tr("Exporta o importa SQLite y las portadas locales. Los archivos originales no se incluyen: se conservan como archivos externos en sus carpetas.")
@@ -2069,13 +2115,15 @@ impl BoothApp {
                 });
                 ui.label(RichText::new(tr("Antes de importar, SZKura guarda automáticamente una copia de recuperación de tu SQLite actual.")
                 ).color(colors().muted).size(11.5));
-                ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                }
+                if self.configured && self.settings_section==SettingsSection::Sharing {
                 self.library_ui.settings_ui(ui,&self.paths.db,
                     self.paths.db.parent().unwrap_or(Path::new(".")));
                 ui.add_space(18.0);ui.separator();ui.add_space(8.0);
                 self.sharing.settings_ui(ui,&mut self.db,
                     self.paths.db.parent().unwrap_or(Path::new(".")));
-                ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                }
+                if self.configured && self.settings_section==SettingsSection::Updates {
                 ui.label(RichText::new(tr("Versión y actualizaciones")).strong().size(17.0));
                 ui.horizontal_wrapped(|ui|{
                     ui.label(RichText::new(format!("{} {}",tr("Versión instalada:"),
@@ -2129,8 +2177,9 @@ impl BoothApp {
                         human_size(total as i64)
                     )));
                 }
-                if self.configured {
-                    ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                }
+                if self.configured && self.settings_section==SettingsSection::Storage {
+                    ui.add_space(20.0);ui.separator();ui.add_space(9.0);
                     ui.label(RichText::new(tr("Organizar archivos antiguos")).strong().size(17.0));
                     ui.label(RichText::new(tr("Copia al almacén actual los ZIP vinculados de versiones anteriores, verifica sus hashes y actualiza sus rutas. No borra los originales.")
                     ).color(colors().muted).size(12.5));
@@ -2138,6 +2187,7 @@ impl BoothApp {
                         egui::Button::new(tr("Organizar biblioteca existente"))).clicked(){
                         organize=true;
                     }
+                }
                 }
                 });
             });
