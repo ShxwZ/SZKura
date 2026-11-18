@@ -20,6 +20,18 @@ struct CoverReady {
     image:Option<egui::ColorImage>,
 }
 
+/// A crashed/disconnected worker must never leave the UI permanently busy.
+fn poll_result<T>(rx:&mut Option<Receiver<Result<T,String>>>)->Option<Result<T,String>> {
+    let result=rx.as_ref().and_then(|channel|match channel.try_recv() {
+        Ok(value)=>Some(value),
+        Err(mpsc::TryRecvError::Disconnected)=>
+            Some(Err("La tarea en segundo plano se interrumpió".into())),
+        Err(mpsc::TryRecvError::Empty)=>None,
+    });
+    if result.is_some(){*rx=None;}
+    result
+}
+
 pub struct LibraryUi {
     pub remote_active:bool,
     host_products:Vec<Asset>,
@@ -289,8 +301,7 @@ impl LibraryUi {
     }
 
     pub fn poll(&mut self,ctx:&egui::Context)->Option<i64>{
-        if let Some(answer)=self.host_load_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
-            self.host_load_rx=None;
+        if let Some(answer)=poll_result(&mut self.host_load_rx){
             match answer {
                 Ok(products) if products.len()<=2_000=>{
                     self.host_products=products;
@@ -304,8 +315,7 @@ impl LibraryUi {
                 Err(err)=>self.host_status=format!("{}: {err}",tr("Error leyendo biblioteca")),
             }
         }
-        if let Some(answer)=self.host_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
-            self.host_rx=None;
+        if let Some(answer)=poll_result(&mut self.host_rx){
             match answer {
                 Ok(session)=>{
                     if self.host_cancel.load(Ordering::Relaxed) {
@@ -318,8 +328,7 @@ impl LibraryUi {
                 Err(error)=>self.host_status=format!("{}: {error}",tr("Error al compartir")),
             }
         }
-        if let Some(answer)=self.connect_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
-            self.connect_rx=None;
+        if let Some(answer)=poll_result(&mut self.connect_rx){
             match answer {
                 Ok(connection)=>{
                     self.connection=Some(connection);
@@ -335,8 +344,7 @@ impl LibraryUi {
                 Err(err)=>self.status=format!("{}: {err}",tr("Error al conectar")),
             }
         }
-        if let Some(answer)=self.browse_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
-            self.browse_rx=None;
+        if let Some(answer)=poll_result(&mut self.browse_rx){
             match answer{
                 Ok(page)=>{
                     self.remote_page=page;
@@ -346,15 +354,13 @@ impl LibraryUi {
                 Err(err)=>self.status=format!("{}: {err}",tr("Error al cargar catálogo")),
             }
         }
-        if let Some(answer)=self.detail_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
-            self.detail_rx=None;
+        if let Some(answer)=poll_result(&mut self.detail_rx){
             match answer{
                 Ok(asset)=>{self.chosen_files.clear();self.detail=Some(asset);},
                 Err(err)=>self.status=format!("{}: {err}",tr("Error al cargar ficha")),
             }
         }
-        if let Some(answer)=self.import_rx.as_ref().and_then(|rx|rx.try_recv().ok()){
-            self.import_rx=None;
+        if let Some(answer)=poll_result(&mut self.import_rx){
             match answer{
                 Ok(local_id)=>{
                     self.status=tr("Ficha añadida a mi biblioteca.").into();
