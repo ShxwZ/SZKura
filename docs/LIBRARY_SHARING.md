@@ -9,7 +9,7 @@ Función opcional de la [issue #6](https://github.com/ShxwZ/SZKura/issues/6). Se
 3. Por precaución, los productos marcados como contenido sensible están excluidos de ambos modos, salvo que actives expresamente «Permitir compartir también fichas NSFW».
 4. Pulsa **Elegir fichas para compartir**. Abre una página de ancho completo, con tarjetas y portadas como la biblioteca local: búsqueda, cuadrícula/lista, categorías, avatares y filtros con/sin archivos. Hay opciones de **Solo excluidas** o **Solo seleccionadas**, según el modo. Puedes volver a Configuración sin perder la selección.
 5. Al publicar una **ficha completa**, se ofrecen **todos sus adjuntos**. No existe un selector de archivos por separado. Antes de publicar, comprueba que los archivos están disponibles y que la licencia permite su redistribución.
-6. Pulsa **Iniciar compartir biblioteca**. Primero se muestra una **confirmación explícita** con el número de fichas, el tipo de acceso (LAN o Internet) y la advertencia sobre los adjuntos y sus licencias. Al aceptar, SZKura crea una instantánea y calcula en segundo plano SHA-256 y BLAKE3 de los adjuntos. Puedes elegir **LAN privada** o **Compartir también por Internet (Cloudflare Tunnel)**. La instalación de cloudflared requiere consentimiento expreso y comprobación del SHA-256 oficial.
+6. Pulsa **Iniciar compartir biblioteca**. Primero se muestra una **confirmación explícita** con el número de fichas, el tipo de acceso (LAN o Internet) y la advertencia sobre los adjuntos y sus licencias. Al aceptar, SZKura crea una instantánea **solo de metadatos y permisos consultando SQLite**. No abre, analiza, copia ni calcula hashes de los ZIP/7z/RAR/UnityPackage al publicar. Puedes elegir **LAN privada** o **Compartir también por Internet (Cloudflare Tunnel)**. La instalación de cloudflared requiere consentimiento expreso y comprobación de su SHA-256 oficial.
 7. Copia la invitación privada. **Detener biblioteca compartida** en el encabezado o salir de SZKura revoca la sesión y su túnel.
 
 Los productos ocultos son invisibles para el visitante: no se exponen sus títulos, recuentos, identificadores de SQLite, avatares, portadas ni archivos. Los cambios posteriores del anfitrión **no actualizan** una sesión ya iniciada; detén y reinicia la publicación para renovar su instantánea.
@@ -21,13 +21,13 @@ Los productos ocultos son invisibles para el visitante: no se exponen sus títul
 3. Navega con cuadrícula/lista, búsqueda, categorías, avatares, NSFW y filtros con/sin archivos. **No hay botones de página**: al desplazarte se van solicitando más resultados. La API continúa paginada internamente en lotes de 32 para controlar memoria y transferencia.
 4. Cada tarjeta compara el identificador de origen o el artículo BOOTH y las firmas de adjuntos con tu SQLite local. Muestra **Nuevo**, **Ya en mi biblioteca** o **Archivos por actualizar**. En la ficha, SZKura comprueba además **los hashes reales de las copias locales en un worker**, no solo las firmas guardadas.
 5. Pulsa **Importar ficha completa** o **Actualizar ficha completa**, según corresponda. Se muestra una confirmación que explica las descargas y que se conservarán tus metadatos y versiones anteriores.
-6. SZKura descarga **solo** los archivos nuevos, distintos o ausentes, verifica tamaños y ambos hashes y revisa los contenedores ZIP/7z/RAR. El commit de producto y adjuntos ocurre después, en **una única transacción SQLite**. Si algo falla o se cancela antes del commit, no se crea una ficha importada a medias. **No hay opción de importar únicamente metadatos.**
+6. SZKura descarga **solo** los archivos nuevos, distintos o ausentes, verifica su tamaño y **BLAKE3** al recibirlos y revisa los contenedores ZIP/7z/RAR. El commit de producto y adjuntos ocurre después, en **una única transacción SQLite**. Si algo falla o se cancela antes del commit, no se crea una ficha importada a medias. **No hay opción de importar únicamente metadatos.**
 
 ### Identificar productos y archivos
 
 - El anfitrión conserva una **identidad secreta local** que permite derivar una clave opaca estable por producto. En el cliente se registra la clave asociada a la ficha local, **sin guardar los tokens o claves de invitación**.
 - Si todavía no existe un vínculo por origen, se utiliza el **ID canónico BOOTH** cuando está disponible. No se fusionan registros por parecido de nombre o ruta.
-- El almacén local usa **BLAKE3** como checksum de adjuntos; la transferencia compara también **SHA-256**. Un archivo local supuestamente igual, pero ausente o modificado, se recupera y verifica.
+- El almacén local ya registra **BLAKE3** al incorporar adjuntos. La versión 3 del protocolo de biblioteca comparte ese hash de SQLite directamente, sin volver a leer todos los archivos para calcular SHA-256 al abrir el servidor. Los bytes transferidos y los archivos locales reutilizados se validan con BLAKE3. Si un archivo local supuestamente igual está ausente o fue modificado, se recupera y verifica.
 - Si una versión nueva tiene el mismo nombre de archivo pero otro contenido, **se añade sin sobrescribir la versión anterior**. Los campos locales editados manualmente no se sustituyen por los del anfitrión. Las nuevas versiones de archivos no implican sincronización bidireccional.
 
 ## Seguridad
@@ -40,14 +40,17 @@ Los productos ocultos son invisibles para el visitante: no se exponen sus títul
 
 ## Límites y advertencias
 
-- Hasta **2000 fichas** y **512 adjuntos** por sesión, **8 GiB por archivo** y **16 GiB** en total. Cuatro peticiones concurrentes del servidor y páginas HTTP de 32 productos. En bibliotecas grandes el hash inicial puede tardar.
+- Hasta **2000 fichas** y **4096 adjuntos** por sesión, **128 GiB por archivo** y **256 GiB** en total (50 GiB admitidos). Cuatro peticiones concurrentes del servidor y páginas HTTP de 32 productos. La preparación no depende del tamaño total de los archivos: solo comprueba metadatos de fichero y hashes ya almacenados, sin leer sus bytes.
 - La UI limita y carga bajo demanda las portadas remotas visibles para evitar acumular texturas en memoria. Al cambiar filtros durante una descarga de página, SZKura descarta los resultados anteriores para no mezclar listas.
 - Configuración separa sus áreas mediante pestañas temáticas con scroll independiente, en lugar de una lista vertical continua; no cambia las preferencias guardadas.
 - Sin cuentas, reconexión persistente, sincronización bidireccional, borrado automático de versiones antiguas ni reanudación de descargas.
 - Si el proceso se interrumpe abruptamente durante la incorporación física de archivos, pueden quedar copias huérfanas no enlazadas; no se sobrescriben originales. Para errores normales, se limpian archivos recién incorporados y se revierte la transacción SQLite.
+- **Adjuntos modificados fuera de SZKura:** el servidor conserva el tamaño y la fecha de modificación que comprobó al iniciar. Si cambian durante la sesión, rechaza la descarga hasta reiniciar la publicación. Si los bytes se modificaron antes de compartir, SQLite podría contener un BLAKE3 antiguo; el cliente rechazará la descarga por diferencia de hash. En ese caso, vuelve a incorporar o indexar la versión actual del adjunto antes de compartirla. El modo rápido no afirma haber verificado todos los bytes del anfitrión al iniciar.
+- **Internet y archivos grandes:** Cloudflare Quick Tunnel no garantiza transferencias de 50 GiB, velocidad, tiempo de conexión ni reanudación. El límite ampliado es del protocolo SZKura, no una garantía de que cualquier túnel o red admita un archivo de ese tamaño.
+- **Modelo de memoria:** el anfitrión conserva únicamente una instantánea acotada de los metadatos autorizados (nunca los bytes de los archivos). Genera JSON de esa instantánea al consultar páginas y sirve portadas y adjuntos bajo demanda, sin publicar rutas locales ni cambios de permiso durante la sesión.
 - **La compilación automática no sustituye la revisión visual** ES/EN, cuatro paletas, ventanas pequeñas/grandes, ni las pruebas manuales entre dos equipos mediante LAN y Cloudflare.
 
-## API de solo lectura v2
+## API de solo lectura v3
 
 - `GET /l/{token}/v1/library` — versión de protocolo, nombre, número de fichas publicadas y filtros de avatar disponibles (no incluye ocultas)
 - `GET /l/{token}/v1/assets` — catálogo y firmas de contenido, paginado internamente, con filtros
@@ -55,4 +58,4 @@ Los productos ocultos son invisibles para el visitante: no se exponen sus títul
 - `GET /l/{token}/v1/covers/{id}` — portada visible
 - `GET /l/{token}/v1/files/{id}` — archivo autorizado, con verificación de contenido en cliente
 
-**La versión de protocolo es 2** aunque las rutas mantengan `/v1/` por compatibilidad de forma; cliente y anfitrión necesitan una versión compatible de SZKura. Los productos no seleccionados no aparecen en ningún resultado.
+**La versión de protocolo es 3** aunque las rutas mantengan `/v1/` por compatibilidad de forma; las nuevas fichas de archivos contienen BLAKE3 pero ya no SHA-256. Tanto anfitrión como visitante necesitan esta versión de SZKura para conectarse. Los productos no seleccionados no aparecen en ningún resultado.
