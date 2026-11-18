@@ -39,6 +39,7 @@ fn poll_result<T>(rx:&mut Option<Receiver<Result<T,String>>>)->Option<Result<T,S
 pub struct LibraryUi {
     pub remote_active:bool,
     host_products:Vec<Asset>,
+    host_avatar_options:Vec<String>,
     host_load_rx:Option<Receiver<Result<Vec<Asset>,String>>>,
     host_selection:ShareSelection,
     pub picker_open:bool,
@@ -81,7 +82,8 @@ pub struct LibraryUi {
 impl Default for LibraryUi {
     fn default()->Self{
         Self{
-            remote_active:false,host_products:Vec::new(),host_load_rx:None,
+            remote_active:false,host_products:Vec::new(),
+            host_avatar_options:Vec::new(),host_load_rx:None,
             host_selection:ShareSelection::default(),picker_open:false,picker_grid:true,
             host_filter:String::new(),host_category:String::new(),
             host_avatar_filter:String::new(),host_files_filter:FileFilter::All,
@@ -224,13 +226,6 @@ impl LibraryUi {
         ui.add_space(12.0);ui.separator();ui.add_space(8.0);
         ui.label(RichText::new(tr("AVATAR COMPATIBLE"))
             .strong().color(colors().accent).size(11.0));
-        let mut avatars=BTreeSet::new();
-        for asset in &self.host_products {
-            for label in asset.avatars.split([',',';']) {
-                let label=label.trim();
-                if !label.is_empty(){avatars.insert(label.to_owned());}
-            }
-        }
         egui::ComboBox::from_id_salt("picker-avatar")
             .selected_text(if self.host_avatar_filter.is_empty(){
                 tr("Todos los avatares")
@@ -238,7 +233,7 @@ impl LibraryUi {
             .show_ui(ui,|ui|{
                 ui.selectable_value(&mut self.host_avatar_filter,String::new(),
                     tr("Todos los avatares"));
-                for name in avatars.iter().take(512){
+                for name in &self.host_avatar_options{
                     ui.selectable_value(&mut self.host_avatar_filter,name.clone(),name);
                 }
             });
@@ -470,6 +465,14 @@ impl LibraryUi {
                 Ok(products) if products.len()<=MAX_SELECTION=>{
                     let valid:BTreeSet<_>=products.iter().map(|p|p.id).collect();
                     self.host_selection.products.retain(|id|valid.contains(id));
+                    let mut avatar_names=BTreeSet::new();
+                    for product in &products {
+                        for item in product.avatars.split([',',';']){
+                            let name=item.trim();
+                            if !name.is_empty(){avatar_names.insert(name.to_owned());}
+                        }
+                    }
+                    self.host_avatar_options=avatar_names.into_iter().take(512).collect();
                     self.host_products=products;
                     self.host_status=tr("Selecciona las fichas que deseas publicar.").into();
                 },
