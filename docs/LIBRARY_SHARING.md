@@ -4,7 +4,7 @@ Función opcional de la [issue #6](https://github.com/ShxwZ/SZKura/issues/6). Se
 
 ## Anfitrión: seleccionar el alcance
 
-1. En **Configuración → Compartir biblioteca**, asigna un **nombre** reconocible a tu biblioteca.
+1. Abre **Configuración → Compartir biblioteca** usando la pestaña **Compartir biblioteca** de Configuración (las demás pestañas separan Almacenamiento, Apariencia e idioma, Copia de seguridad y Actualizaciones). Asigna un **nombre** reconocible a tu biblioteca.
 2. Selecciona **Compartir salvo excluidas** (modo predeterminado) o **Compartir solo incluidas**. El primer modo permite marcar únicamente los productos que quieres ocultar; el segundo comienza con ninguno incluido. **No se publica nada hasta pulsar Iniciar compartir biblioteca.**
 3. Por precaución, los productos marcados como contenido sensible están excluidos de ambos modos, salvo que actives expresamente «Permitir compartir también fichas NSFW».
 4. Pulsa **Elegir fichas para compartir**. Abre una página de ancho completo, con tarjetas y portadas como la biblioteca local: búsqueda, cuadrícula/lista, categorías, avatares y filtros con/sin archivos. Hay opciones de **Solo excluidas** o **Solo seleccionadas**, según el modo. Puedes volver a Configuración sin perder la selección.
@@ -41,7 +41,8 @@ Los productos ocultos son invisibles para el visitante: no se exponen sus títul
 ## Límites y advertencias
 
 - Hasta **2000 fichas** y **512 adjuntos** por sesión, **8 GiB por archivo** y **16 GiB** en total. Cuatro peticiones concurrentes del servidor y páginas HTTP de 32 productos. En bibliotecas grandes el hash inicial puede tardar.
-- La UI limita y carga bajo demanda las portadas remotas visibles para evitar acumular texturas en memoria.
+- La UI limita y carga bajo demanda las portadas remotas visibles para evitar acumular texturas en memoria. Al cambiar filtros durante una descarga de página, SZKura descarta los resultados anteriores para no mezclar listas.
+- Configuración separa sus áreas mediante pestañas temáticas con scroll independiente, en lugar de una lista vertical continua; no cambia las preferencias guardadas.
 - Sin cuentas, reconexión persistente, sincronización bidireccional, borrado automático de versiones antiguas ni reanudación de descargas.
 - Si el proceso se interrumpe abruptamente durante la incorporación física de archivos, pueden quedar copias huérfanas no enlazadas; no se sobrescriben originales. Para errores normales, se limpian archivos recién incorporados y se revierte la transacción SQLite.
 - **La compilación automática no sustituye la revisión visual** ES/EN, cuatro paletas, ventanas pequeñas/grandes, ni las pruebas manuales entre dos equipos mediante LAN y Cloudflare.
