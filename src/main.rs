@@ -649,6 +649,9 @@ impl BoothApp {
         });
     }
     fn start_new(&mut self) {
+        if self.library_ui.remote_active {
+            self.library_ui.leave_remote();
+        }
         if !self.configured {self.show_settings=true;return;}
         self.selected=None;
         self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
