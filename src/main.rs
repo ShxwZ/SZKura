@@ -889,7 +889,8 @@ impl BoothApp {
                     ui.label(RichText::new(updater::installed_version()).size(11.5).color(colors().accent));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                         if busy{ui.spinner();}
-                        if !self.show_settings {
+                        if !self.show_settings && !self.library_ui.remote_active
+                            && !self.library_ui.picker_open {
                             if action(ui,Icon::Folder,"Configuración",false){
                                 self.show_settings=true;
                             }
@@ -1863,7 +1864,9 @@ impl BoothApp {
                                         });
                                         ui.with_layout(egui::Layout::right_to_left(
                                             egui::Align::Center),|ui|{
-                                            if ui.button(tr(self.library_ui.picker_toggle_label(asset.id))).clicked(){
+                                            if ui.add_enabled(!self.library_ui.toggle_disabled(asset.id),
+                                                egui::Button::new(tr(self.library_ui.picker_toggle_label(asset.id))))
+                                                .clicked(){
                                                 self.library_ui.toggle_selected(asset.id);
                                             }
                                         });
@@ -1919,7 +1922,9 @@ impl BoothApp {
                                                         .size(12.0).color(colors().muted));
                                                     ui.with_layout(egui::Layout::right_to_left(
                                                         egui::Align::Center),|ui|{
-                                                        if ui.button(tr(self.library_ui.picker_toggle_label(asset.id))).clicked(){
+                                                        if ui.add_enabled(!self.library_ui.toggle_disabled(asset.id),
+                                                egui::Button::new(tr(self.library_ui.picker_toggle_label(asset.id))))
+                                                .clicked(){
                                                             self.library_ui.toggle_selected(asset.id);
                                                         }
                                                     });

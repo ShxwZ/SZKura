@@ -1078,11 +1078,8 @@ impl LibraryUi {
                                     "Catálogo ajeno en solo lectura. Importar no modifica la biblioteca anfitriona."))
                                     .size(12.0).color(colors().muted));
                             });
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                                if action(ui,Icon::Back,"Volver a mi biblioteca",false){
-                                    self.leave_remote();
-                                }
-                            });
+                            ui.label(RichText::new(tr("Solo lectura"))
+                                .size(12.0).color(colors().accent));
                         });
                     });
                 ui.add_space(12.0);
