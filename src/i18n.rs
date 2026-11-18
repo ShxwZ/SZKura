@@ -386,6 +386,7 @@ pub fn translate(language:Language,s:&str)->&str {
         "Error leyendo archivos"=>"Could not read files",
         "Error al compartir"=>"Could not share library",
         "Conectando con la biblioteca..."=>"Connecting to library...",
+        "Cargando selección de productos..."=>"Loading products for selection...",
         "Biblioteca remota conectada."=>"Remote library connected.",
         "Error al conectar"=>"Could not connect",
         "Error al cargar catálogo"=>"Could not load catalog",
