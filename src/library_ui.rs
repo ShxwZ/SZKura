@@ -20,7 +20,10 @@ use crate::{i18n::tr,theme::colors,ui_support::{
 
 const MAX_SELECTION:usize=2_000;
 const MAX_COVER_TEXTURES:usize=80;
-const COVER_BATCH:usize=8;
+const MAX_COVER_TEXTURE_BYTES:usize=48*1024*1024;
+const MAX_COVER_WORKERS:usize=3;
+const COVER_CARD_SIDE:u32=360;
+const COVER_DETAIL_SIDE:u32=768;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PublishMode {Exclude,Include}
 
@@ -43,7 +46,15 @@ impl PublicationPreview {
 
 struct CoverReady {
     id:u64,
-    image:Option<egui::ColorImage>,
+    max_side:u32,
+    foreground:Option<egui::ColorImage>,
+    backdrop:Option<egui::ColorImage>,
+}
+struct RemoteCoverTextures {
+    foreground:TextureHandle,
+    background:Option<TextureHandle>,
+    max_side:u32,
+    bytes:usize,
 }
 
 /// A crashed/disconnected worker must never leave the UI permanently busy.
@@ -121,8 +132,11 @@ pub struct LibraryUi {
     pending_import:Option<u64>,
     local_db_path:Option<PathBuf>,
     import_cancel:Arc<AtomicBool>,
+    cover_tx:Option<mpsc::Sender<CoverReady>>,
     cover_rx:Option<Receiver<CoverReady>>,
-    cover_textures:HashMap<u64,TextureHandle>,
+    cover_textures:HashMap<u64,RemoteCoverTextures>,
+    cover_targets:HashMap<u64,u32>,
+    cover_texture_bytes:usize,
     cover_queue:VecDeque<u64>,
     cover_inflight:BTreeSet<u64>,
     cover_failed:BTreeSet<u64>,
@@ -152,7 +166,8 @@ impl Default for LibraryUi {
             detail_state:RemoteLocalState::Unknown,import_rx:None,pending_import:None,
             local_db_path:None,
             import_cancel:Arc::new(AtomicBool::new(false)),
-            cover_rx:None,cover_textures:HashMap::new(),
+            cover_tx:None,cover_rx:None,cover_textures:HashMap::new(),
+            cover_targets:HashMap::new(),cover_texture_bytes:0,
             cover_queue:VecDeque::new(),cover_inflight:BTreeSet::new(),
             cover_failed:BTreeSet::new(),cover_recent:VecDeque::new(),
             status:String::new(),
@@ -177,7 +192,10 @@ impl LibraryUi {
         self.detail_rx=None;
         self.connect_rx=None;
         self.cover_rx=None;
+        self.cover_tx=None;
         self.cover_textures.clear();
+        self.cover_targets.clear();
+        self.cover_texture_bytes=0;
         self.cover_queue.clear();
         self.cover_inflight.clear();
         self.cover_failed.clear();
@@ -754,11 +772,15 @@ impl LibraryUi {
                     self.offset=0;
                     self.browse_parameters=None;
                     self.cover_textures.clear();
+                    self.cover_targets.clear();
+                    self.cover_texture_bytes=0;
                     self.cover_queue.clear();
                     self.cover_inflight.clear();
                     self.cover_failed.clear();
                     self.cover_recent.clear();
-                    self.cover_rx=None;
+                    let (cover_tx,cover_rx)=mpsc::channel();
+                    self.cover_tx=Some(cover_tx);
+                    self.cover_rx=Some(cover_rx);
                     self.request_browse();
                     self.status=tr("Biblioteca remota conectada.").into();
                 },
@@ -817,31 +839,56 @@ impl LibraryUi {
                 Err(err)=>self.status=format!("{}: {err}",tr("Error al importar")),
             }
         }
+        // Upload at most three ready textures per frame. Remote covers are
+        // decoded off-thread, just like the native library cover cache.
         if let Some(rx)=&self.cover_rx {
-            loop {
-                match rx.try_recv() {
+            for _ in 0..3 {
+                match rx.try_recv(){
                     Ok(cover)=>{
                         self.cover_inflight.remove(&cover.id);
-                        if let Some(image)=cover.image{
-                            let tex=ctx.load_texture(
-                                format!("szkura-remote-cover-{}",cover.id),image,
-                                egui::TextureOptions::LINEAR);
-                            self.cover_textures.insert(cover.id,tex);
+                        if let Some(image)=cover.foreground {
+                            let mut bytes=image.pixels.len().saturating_mul(4);
+                            let foreground=ctx.load_texture(format!(
+                                "szkura-remote-cover-{}",cover.id),
+                                image,egui::TextureOptions::LINEAR);
+                            let background=cover.backdrop.map(|backdrop|{
+                                bytes=bytes.saturating_add(backdrop.pixels.len().saturating_mul(4));
+                                ctx.load_texture(format!("szkura-remote-blur-{}",cover.id),
+                                    backdrop,egui::TextureOptions::LINEAR)
+                            });
+                            if let Some(old)=self.cover_textures.insert(cover.id,
+                                RemoteCoverTextures{foreground,background,
+                                    max_side:cover.max_side,bytes}){
+                                self.cover_texture_bytes=self.cover_texture_bytes
+                                    .saturating_sub(old.bytes);
+                            }
+                            self.cover_texture_bytes=self.cover_texture_bytes
+                                .saturating_add(bytes);
                             self.cover_recent.retain(|id|*id!=cover.id);
                             self.cover_recent.push_back(cover.id);
-                            while self.cover_recent.len()>MAX_COVER_TEXTURES{
+                            while (self.cover_texture_bytes>MAX_COVER_TEXTURE_BYTES
+                                || self.cover_recent.len()>MAX_COVER_TEXTURES)
+                                && self.cover_recent.len()>1 {
                                 if let Some(old)=self.cover_recent.pop_front(){
-                                    self.cover_textures.remove(&old);
+                                    if let Some(texture)=self.cover_textures.remove(&old){
+                                        self.cover_texture_bytes=self.cover_texture_bytes
+                                            .saturating_sub(texture.bytes);
+                                    }
                                 }
+                            }
+                            if self.cover_targets.get(&cover.id).copied()
+                                .is_some_and(|size|size>cover.max_side){
+                                self.cover_queue.push_front(cover.id);
                             }
                         }else{self.cover_failed.insert(cover.id);}
                     },
                     Err(mpsc::TryRecvError::Empty)=>break,
                     Err(mpsc::TryRecvError::Disconnected)=>{
                         self.cover_rx=None;
+                        self.cover_tx=None;
                         self.cover_inflight.clear();
                         break;
-                    },
+                    }
                 }
             }
         }
@@ -866,7 +913,7 @@ impl LibraryUi {
         }
         if self.host_load_rx.is_some() || self.host_rx.is_some() || self.connect_rx.is_some()
             || self.browse_rx.is_some() || self.detail_rx.is_some()
-            || self.import_rx.is_some() || self.cover_rx.is_some()
+            || self.import_rx.is_some() || !self.cover_inflight.is_empty()
             || !self.cover_queue.is_empty(){
             ctx.request_repaint_after(Duration::from_millis(120));
         }
@@ -874,28 +921,35 @@ impl LibraryUi {
     }
 
     fn start_cover_batch(&mut self){
-        if self.cover_rx.is_some(){return;}
         let Some(conn)=self.connection.clone() else{return;};
-        let mut ids=Vec::new();
-        while ids.len()<COVER_BATCH{
+        let Some(sender)=self.cover_tx.clone() else{return;};
+        // Three independent workers avoid head-of-line blocking: a slow or
+        // missing cover never prevents the others from appearing.
+        while self.cover_inflight.len()<MAX_COVER_WORKERS {
             let Some(id)=self.cover_queue.pop_front() else{break;};
-            if self.cover_failed.contains(&id)
-                || self.cover_textures.contains_key(&id)
-                || !self.cover_inflight.insert(id){continue;}
-            ids.push(id);
-        }
-        if ids.is_empty(){return;}
-        let (tx,rx)=mpsc::channel();
-        self.cover_rx=Some(rx);
-        thread::spawn(move||{
-            for id in ids{
-                let image=library_lan::fetch_cover(&conn,id).ok().flatten()
-                    .and_then(|bytes|library_lan::decode_cover_small(&bytes,360))
-                    .map(|thumb|egui::ColorImage::from_rgba_unmultiplied(
-                        [thumb.width() as usize,thumb.height() as usize],thumb.as_raw()));
-                if tx.send(CoverReady{id,image}).is_err(){break;}
+            if self.cover_failed.contains(&id) || self.cover_inflight.contains(&id){
+                continue;
             }
-        });
+            let side=self.cover_targets.get(&id).copied().unwrap_or(COVER_CARD_SIDE);
+            if self.cover_textures.get(&id).is_some_and(|item|item.max_side>=side){
+                continue;
+            }
+            self.cover_inflight.insert(id);
+            let tx=sender.clone();
+            let client=conn.clone();
+            thread::spawn(move||{
+                let (foreground,backdrop)=library_lan::fetch_cover(&client,id)
+                    .ok().flatten()
+                    .and_then(|bytes|library_lan::decode_cover_prepared(&bytes,side))
+                    .map(|(image,blur)|{
+                        (Some(egui::ColorImage::from_rgba_unmultiplied(
+                            [image.width() as usize,image.height() as usize],image.as_raw())),
+                         Some(egui::ColorImage::from_rgba_unmultiplied(
+                            [blur.width() as usize,blur.height() as usize],blur.as_raw())))
+                    }).unwrap_or((None,None));
+                let _=tx.send(CoverReady{id,max_side:side,foreground,backdrop});
+            });
+        }
     }
     fn request_browse(&mut self){
         if self.browse_rx.is_some(){return;}
@@ -993,32 +1047,33 @@ impl LibraryUi {
 
     fn draw_cover(&mut self,ui:&mut egui::Ui,id:u64,
         has_cover:bool,width:f32,height:f32){
+        let side=if height>220.0{COVER_DETAIL_SIDE}else{COVER_CARD_SIDE};
+        if has_cover {
+            self.cover_targets.entry(id).and_modify(|value|{
+                *value=(*value).max(side);
+            }).or_insert(side);
+        }
+        let ready=self.cover_textures.get(&id)
+            .is_some_and(|texture|texture.max_side>=side);
         if self.cover_textures.contains_key(&id){
             self.cover_recent.retain(|item|*item!=id);
             self.cover_recent.push_back(id);
-        }else if has_cover && !self.cover_failed.contains(&id)
+        }
+        if has_cover && !ready && !self.cover_failed.contains(&id)
             && !self.cover_inflight.contains(&id)
             && !self.cover_queue.contains(&id){
-            self.cover_queue.push_back(id);
+            if side>COVER_CARD_SIDE{self.cover_queue.push_front(id);}
+            else{self.cover_queue.push_back(id);}
             ui.ctx().request_repaint_after(Duration::from_millis(40));
         }
-        egui::Frame::new().fill(colors().faint_bg).corner_radius(8)
-            .show(ui,|ui|{
-                if let Some(tex)=self.cover_textures.get(&id){
-                    let natural=tex.size_vec2();
-                    let ratio=(width/natural.x).min(height/natural.y);
-                    let size=natural*ratio;
-                    ui.allocate_ui_with_layout(egui::vec2(width,height),
-                        egui::Layout::centered_and_justified(egui::Direction::TopDown),|ui|{
-                            ui.add(egui::Image::new(tex).fit_to_exact_size(size));
-                        });
-                }else{
-                    ui.allocate_ui_with_layout(egui::vec2(width,height),
-                        egui::Layout::centered_and_justified(egui::Direction::TopDown),|ui|{
-                            ui.label(RichText::new(tr("Sin portada")).color(colors().muted));
-                        });
-                }
-            });
+        let texture=self.cover_textures.get(&id);
+        let placeholder=if !has_cover{tr("Sin portada")}
+            else if self.cover_failed.contains(&id){tr("Portada no disponible")}
+            else{tr("Cargando portada...")};
+        crate::ui_support::paint_cover(ui,
+            texture.map(|texture|&texture.foreground),
+            texture.and_then(|texture|texture.background.as_ref()),
+            width,height,placeholder);
     }
 
     fn state_label(state:RemoteLocalState)->&'static str{
