@@ -636,7 +636,7 @@ impl Catalog {
         expected:&[(String,String,u64)])->Result<RemoteFileState>{
         let attachments=self.attachments_for(local_id)?;
         let mut pending=0usize;
-        for (name,hash,size) in expected{
+        for (_name,hash,size) in expected{
             let matches=attachments.iter().any(|entry|{
                 entry.checksum==*hash
                     && u64::try_from(entry.bytes).ok()==Some(*size)
@@ -1323,4 +1323,88 @@ mod tests {
         db.set_cover(id, "/manual-cover.png").unwrap();
         assert_eq!(db.get(id).unwrap().unwrap().image_path, "/manual-cover.png");
     }
+
+    #[test]
+    fn remote_import_preserves_versions_and_uses_stable_origin() {
+        let dir=tempfile::tempdir().unwrap();
+        let db_path=dir.path().join("products.sqlite");
+        let root=dir.path().join("assets");
+        let covers=dir.path().join("covers");
+        let mut db=Catalog::open(&db_path).unwrap();
+        db.configure_storage(&root).unwrap();
+        let stage=tempfile::tempdir_in(&root).unwrap();
+        let input=stage.path().join("costume.zip");
+        std::fs::write(&input,b"version 1").unwrap();
+        let hash=blake3::hash(b"version 1").to_hex().to_string();
+        let incoming=RemoteImportRecord{
+            origin_key:"a".repeat(64),booth_url:String::new(),title:"Test".into(),
+            category:"Ropa".into(),creator:"Creator".into(),tags:String::new(),
+            description:"Test product".into(),avatars:vec!["MANUKA".into()],
+            nsfw:false,cover:None,
+        };
+        let report=db.commit_remote_import(&root,&covers,&incoming,&[
+            RemoteStagedFile{original_name:"costume.zip".into(),source:input.clone(),
+                blake3:hash.clone(),bytes:9},
+        ]).unwrap();
+        assert_eq!(report.new_files,1);
+        assert!(report.is_new);
+        assert_eq!(db.existing_remote_source(&incoming.origin_key).unwrap(),
+            Some(report.asset_id));
+        assert_eq!(db.attachments_for(report.asset_id).unwrap().len(),1);
+        assert!(db.get(report.asset_id).unwrap().is_some());
+        let saved=db.get(report.asset_id).unwrap().unwrap();
+        assert_eq!(saved.avatars,"MANUKA");
+        // New content with the same filename adds a version, NEVER rewrites
+        // the original bytes or any manually edited product metadata.
+        db.update_details(report.asset_id,"My custom title","Ropa","Me","","").unwrap();
+        let stage2=tempfile::tempdir_in(&root).unwrap();
+        let updated=stage2.path().join("costume.zip");
+        std::fs::write(&updated,b"version 2").unwrap();
+        let second=db.commit_remote_import(&root,&covers,&incoming,&[
+            RemoteStagedFile{original_name:"costume.zip".into(),source:updated,
+                blake3:blake3::hash(b"version 2").to_hex().to_string(),bytes:9},
+        ]).unwrap();
+        assert_eq!(second.asset_id,report.asset_id);
+        assert!(!second.is_new);
+        let files=db.attachments_for(report.asset_id).unwrap();
+        assert_eq!(files.len(),2);
+        assert!(files.iter().any(|entry|entry.checksum==hash
+            && std::fs::read(&entry.stored_path).unwrap()==b"version 1"));
+        assert_eq!(db.get(report.asset_id).unwrap().unwrap().title,"My custom title");
+    }
+    #[test]
+    fn remote_import_rolls_back_all_links_and_files_on_later_failure(){
+        let dir=tempfile::tempdir().unwrap();
+        let db_path=dir.path().join("catalog.sqlite");
+        let root=dir.path().join("assets");
+        let covers=dir.path().join("covers");
+        let mut db=Catalog::open(&db_path).unwrap();
+        db.configure_storage(&root).unwrap();
+        let stage=tempfile::tempdir_in(&root).unwrap();
+        let good=stage.path().join("good.zip");
+        std::fs::write(&good,b"first").unwrap();
+        let missing=stage.path().join("missing.zip");
+        let incoming=RemoteImportRecord{
+            origin_key:"b".repeat(64),booth_url:String::new(),title:"All or nothing".into(),
+            category:"Ropa".into(),creator:String::new(),tags:String::new(),
+            description:String::new(),avatars:Vec::new(),nsfw:false,cover:None,
+        };
+        let error=db.commit_remote_import(&root,&covers,&incoming,&[
+            RemoteStagedFile{original_name:"good.zip".into(),source:good,
+                blake3:blake3::hash(b"first").to_hex().to_string(),bytes:5},
+            RemoteStagedFile{original_name:"missing.zip".into(),source:missing,
+                blake3:blake3::hash(b"second").to_hex().to_string(),bytes:6},
+        ]).unwrap_err();
+        assert!(!error.to_string().is_empty());
+        assert_eq!(db.count().unwrap(),0);
+        assert!(db.existing_remote_source(&incoming.origin_key).unwrap().is_none());
+        // The prior file was moved into managed storage, then explicitly
+        // removed by rollback when the second staged file was missing.
+        let contents=walkdir::WalkDir::new(&root).into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry|entry.file_type().is_file())
+            .map(|entry|entry.path().to_path_buf()).collect::<Vec<_>>();
+        assert!(contents.is_empty(), "{contents:?}");
+    }
+
 }
