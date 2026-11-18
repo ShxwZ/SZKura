@@ -26,9 +26,9 @@ use crate::{booth, db::{Catalog, CATEGORIES, FileFilter, RemoteFileState,
 pub const PROTOCOL_VERSION: u32 = 3;
 const KEY_HEADER: &str = "X-SZKura-Library-Key";
 const MAX_PRODUCTS: usize = 2_000;
-const MAX_FILES: usize = 4_096;
+pub const MAX_FILES: usize = 4_096;
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024 * 1024;
-const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
+pub const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
 const MAX_COVER_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_JSON_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 4;
@@ -425,6 +425,8 @@ pub struct LibrarySession {
     pub name:String,
     pub visible:usize,
     pub downloadable:usize,
+    /// SQLite estimate for published attached files, without reading their bytes.
+    pub total_bytes:u64,
     stop:Arc<AtomicBool>,
     tunnel:Option<share_transfer::QuickTunnel>,
 }
@@ -458,6 +460,8 @@ pub fn start_library(db_path:&Path,selection:&ShareSelection,data_dir:&Path,
     let snapshot=Arc::new(snapshot);
     let files=snapshot.files.len();
     let visible=snapshot.assets.len();
+    let total_bytes=snapshot.assets.iter().flat_map(|asset|&asset.files)
+        .fold(0u64,|total,file|total.saturating_add(file.size));
     let name=snapshot.info.name.clone();
     let thread_key=key.clone();
     let thread_prefix=prefix.clone();
@@ -501,7 +505,7 @@ pub fn start_library(db_path:&Path,selection:&ShareSelection,data_dir:&Path,
     let invitation=if let Some(ref tunnel)=tunnel{
         format!("{}{}#key={key}",tunnel.base_url,prefix)
     }else{local_url};
-    Ok(LibrarySession {invitation,name,visible,downloadable:files,stop,tunnel})
+    Ok(LibrarySession {invitation,name,visible,downloadable:files,total_bytes,stop,tunnel})
 }
 
 #[derive(Clone)]
