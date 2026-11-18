@@ -336,6 +336,10 @@ pub fn translate(language:Language,s:&str)->&str {
         "Las fichas BOOTH existentes conservarán sus metadatos. No se ejecutarán los archivos."=>"Existing BOOTH products will retain their metadata. Files will not be executed.",
         "Importar enlace SZKura"=>"Import SZKura link",
         "Ficha transferida e importada correctamente"=>"Transferred product imported successfully.",
+        "Almacenamiento"=>"Storage",
+        "Apariencia e idioma"=>"Appearance & language",
+        "Copia de seguridad"=>"Backup",
+        "Actualizaciones"=>"Updates",
         "SELECCIÓN PARA COMPARTIR"=>"SHARE SELECTION",
         "Elige fichas completas en la misma cuadrícula que tu biblioteca. Nada se comparte hasta que lo inicies."=>"Select whole products in your normal library grid. Nothing is shared until you start.",
         "Al elegir una ficha se incluyen sus adjuntos. Respeta las licencias de redistribución de BOOTH."=>"Selecting a product includes its attachments. Respect BOOTH redistribution licenses.",
@@ -641,6 +645,20 @@ mod tests{
         ] {
             assert_eq!(translate(Language::Spanish,es),es);
             assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
+    #[test]
+    fn settings_section_tabs_are_translated() {
+        for (spanish,english) in [
+            ("Almacenamiento","Storage"),
+            ("Apariencia e idioma","Appearance & language"),
+            ("Copia de seguridad","Backup"),
+            ("Compartir biblioteca","Share library"),
+            ("Actualizaciones","Updates"),
+        ]{
+            assert_eq!(translate(Language::Spanish,spanish),spanish);
+            assert_eq!(translate(Language::English,spanish),english);
         }
     }
 
