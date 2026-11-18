@@ -106,6 +106,24 @@ impl LibraryUi {
         self.browse_parameters=None;
     }
 
+    /// Always-visible host status and direct Stop control, even while editing.
+    pub fn active_header(&mut self,ui:&mut egui::Ui){
+        let Some(session)=self.host_session.as_ref() else{return;};
+        let invitation=session.invitation.clone();
+        let visible=session.visible;
+        ui.horizontal_wrapped(|ui|{
+            ui.label(RichText::new(format!("{}: {visible}",
+                tr("Compartiendo biblioteca (fichas)")))
+                .strong().size(12.5).color(colors().accent));
+            if action(ui,Icon::Link,"Copiar invitación",false){
+                ui.ctx().copy_text(invitation.clone());
+            }
+            if action(ui,Icon::Trash,"Detener biblioteca compartida",false){
+                self.stop_share();
+            }
+        });
+    }
+
     pub fn stop_share(&mut self){
         self.host_cancel.store(true,Ordering::Relaxed);
         self.host_session=None;

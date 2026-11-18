@@ -898,6 +898,7 @@ impl BoothApp {
                     });
                 });
                 self.sharing.active_header(ui);
+                self.library_ui.active_header(ui);
                 if !self.show_settings && self.selected.is_none() && !self.new_dialog
                      && !self.library_ui.remote_active {
                     ui.add_space(10.0);
