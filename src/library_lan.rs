@@ -974,6 +974,27 @@ mod tests {
     }
 
     #[test]
+    fn remote_cover_decode_matches_local_dimensions_and_blurred_backdrop(){
+        let img=image::DynamicImage::new_rgba8(1280,960);
+        let mut writer=std::io::Cursor::new(Vec::new());
+        img.write_to(&mut writer,image::ImageFormat::Png).unwrap();
+        let (foreground,blur)=decode_cover_prepared(&writer.into_inner(),768).unwrap();
+        assert_eq!(foreground.dimensions(),(768,576));
+        assert_eq!(blur.dimensions(),(64,64));
+    }
+
+    #[test]
+    fn cover_cap_matches_native_catalog_and_does_not_reject_nine_mib_images(){
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("big-cover.png");
+        let file=File::create(&path).unwrap();
+        file.set_len(9*1024*1024).unwrap();
+        assert!(permitted_cover(&path),
+            "Local catalog permits covers up to 32 MiB, so the host must too");
+        assert!(decode_cover_prepared(b"invalid png bytes",360).is_none());
+    }
+
+    #[test]
     fn hosted_manifest_uses_sqlite_blake3_without_reading_or_rehashing_file() {
         use crate::db::{ArchiveMode,NewAttachment};
         let tmp=tempfile::tempdir().unwrap();
