@@ -946,6 +946,74 @@ mod tests {
     }
 
     #[test]
+    fn hosted_manifest_uses_sqlite_blake3_without_reading_or_rehashing_file() {
+        use crate::db::{ArchiveMode,NewAttachment};
+        let tmp=tempfile::tempdir().unwrap();
+        let host_db=tmp.path().join("host.sqlite");
+        let client_db=tmp.path().join("client.sqlite");
+        let local_root=tmp.path().join("client-files");
+        let cover_root=tmp.path().join("covers");
+        let archive=tmp.path().join("example.zip");
+        valid_zip(&archive,b"original content");
+        let mut db=Catalog::open(&host_db).unwrap();
+        let id=db.create_product("Unchanged metadata","Ropa").unwrap();
+        // Simulate stale external metadata: the host must not scan all files
+        // before it can publish a catalog, even when the checksum is stale.
+        let stale="a".repeat(64);
+        db.add_attachment(&NewAttachment{
+            asset_id:id,name:"example.zip",path:&archive.to_string_lossy(),
+            checksum:&stale,bytes:fs::metadata(&archive).unwrap().len() as i64,
+            count:1,mode:ArchiveMode::Reference,
+        }).unwrap();
+        let mut allowed=ShareSelection::default();
+        allowed.products.insert(id);
+        let session=start_library(&host_db,&allowed,tmp.path(),false,
+            "Lazy catalog",&AtomicBool::new(false)).unwrap();
+        let conn=connect(&session.invitation).unwrap();
+        assert_eq!(conn.info.version,PROTOCOL_VERSION);
+        let remote=get_asset(&conn,1).unwrap();
+        assert_eq!(remote.files.len(),1);
+        assert_eq!(remote.files[0].blake3,stale);
+        let mut local=Catalog::open(&client_db).unwrap();
+        local.configure_storage(&local_root).unwrap();
+        drop(local);
+        assert!(import_asset(&conn,1,&client_db,&local_root,&cover_root,
+            &AtomicBool::new(false)).is_err());
+        assert_eq!(Catalog::open(&client_db).unwrap().count().unwrap(),0);
+    }
+
+    #[cfg(target_os="linux")]
+    #[test]
+    fn fifty_gib_library_opens_without_reading_archive_bytes() {
+        // Linux ftruncate creates a sparse file: this test does not allocate
+        // fifty GiB or download anything. A startup hash would be prohibitively
+        // slow and would fail the CI timeout.
+        use crate::db::{ArchiveMode,NewAttachment};
+        let tmp=tempfile::tempdir().unwrap();
+        let db_path=tmp.path().join("host.sqlite");
+        let file_path=tmp.path().join("sparse.zip");
+        let bytes=50u64*1024*1024*1024;
+        File::create(&file_path).unwrap().set_len(bytes).unwrap();
+        let mut db=Catalog::open(&db_path).unwrap();
+        let id=db.create_product("Large library","Ropa").unwrap();
+        let digest="b".repeat(64);
+        db.add_attachment(&NewAttachment{
+            asset_id:id,name:"sparse.zip",path:&file_path.to_string_lossy(),
+            checksum:&digest,bytes:bytes as i64,count:0,mode:ArchiveMode::Reference,
+        }).unwrap();
+        let mut selected=ShareSelection::default();
+        selected.products.insert(id);
+        let session=start_library(&db_path,&selected,tmp.path(),false,
+            "50 GiB",&AtomicBool::new(false)).unwrap();
+        let conn=connect(&session.invitation).unwrap();
+        let remote=get_asset(&conn,1).unwrap();
+        assert_eq!(remote.files[0].size,bytes);
+        assert_eq!(remote.files[0].blake3,digest);
+        assert_eq!(browse(&conn,"","","",FileFilter::All,true,0)
+            .unwrap().items[0].total_bytes,bytes);
+    }
+
+    #[test]
     fn whole_product_without_files_imports_all_available_metadata() {
         let tmp=tempfile::tempdir().unwrap();
         let host=tmp.path().join("host.sqlite");
