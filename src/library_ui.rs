@@ -219,9 +219,12 @@ impl LibraryUi {
                 PublishMode::Include=>self.host_included.contains(&id),
             }
     }
+    pub fn toggle_disabled(&self,id:i64)->bool{
+        self.host_products.iter().find(|asset|asset.id==id)
+            .is_none_or(|asset|asset.nsfw && !self.host_publish_nsfw)
+    }
     pub fn toggle_selected(&mut self,id:i64){
-        if self.host_products.iter().find(|asset|asset.id==id)
-            .is_none_or(|asset|asset.nsfw && !self.host_publish_nsfw){return;}
+        if self.toggle_disabled(id){return;}
         let set=match self.host_mode{
             PublishMode::Exclude=>&mut self.host_excluded,
             PublishMode::Include=>&mut self.host_included,
@@ -465,15 +468,21 @@ impl LibraryUi {
         ui.checkbox(&mut self.host_publish_nsfw,
             tr("Permitir compartir también fichas NSFW"));
         ui.add_space(5.0);
-        if ui.add_enabled(self.host_load_rx.is_none(),
-            egui::Button::new(tr("Elegir fichas para compartir"))
-                .min_size(egui::vec2(200.0,36.0))).clicked(){
-            self.picker_open=true;
-            if self.host_products.is_empty(){
-                self.host_loaded=false;
-                self.load_host_products(db_path);
+        ui.horizontal_wrapped(|ui|{
+            if ui.add_enabled(self.host_load_rx.is_none(),
+                egui::Button::new(tr("Elegir fichas para compartir"))
+                    .min_size(egui::vec2(200.0,36.0))).clicked(){
+                self.picker_open=true;
+                if self.host_products.is_empty(){
+                    self.host_loaded=false;
+                    self.load_host_products(db_path);
+                }
             }
-        }
+            if ui.add_enabled(self.host_load_rx.is_none()
+                && self.host_session.is_none(),
+                egui::Button::new(tr("Actualizar lista de productos")))
+                .clicked(){self.load_host_products(db_path);}
+        });
         ui.label(RichText::new(format!("{}: {}",tr("Fichas que se compartirán"),
             self.selection_count())).color(colors().accent).size(13.0));
         ui.add_space(6.0);
@@ -1212,6 +1221,39 @@ mod picker_tests {
         let products=load_publishable_products(&db).unwrap();
         assert_eq!(products.len(),530);
     }
+
+    #[test]
+    fn publishing_defaults_exclude_mode_but_never_includes_nsfw_without_opt_in(){
+        let tmp=tempfile::tempdir().unwrap();
+        let db_path=tmp.path().join("catalog.sqlite");
+        let mut db=Catalog::open(&db_path).unwrap();
+        let first=db.create_product("Normal A","Ropa").unwrap();
+        let second=db.create_product("Normal B","Ropa").unwrap();
+        let sensitive=db.create_product("Content flagged","Ropa").unwrap();
+        db.set_nsfw(sensitive,true).unwrap();
+        let mut ui=LibraryUi::new();
+        ui.host_products=load_publishable_products(&db).unwrap();
+        assert!(ui.mode_is_exclude());
+        assert_eq!(ui.selection_count(),2);
+        assert!(!ui.selected(sensitive));
+        ui.toggle_selected(first);
+        assert!(!ui.selected(first));
+        assert_eq!(ui.selection_count(),1);
+        ui.host_mode=PublishMode::Include;
+        assert_eq!(ui.selection_count(),0);
+        ui.toggle_selected(second);
+        assert!(ui.selected(second));
+        assert_eq!(ui.selection_count(),1);
+        ui.toggle_selected(sensitive);
+        assert!(!ui.selected(sensitive));
+        ui.host_publish_nsfw=true;
+        ui.toggle_selected(sensitive);
+        assert!(ui.selected(sensitive));
+        assert_eq!(ui.selection_count(),2);
+        assert!(ui.selection().products.contains(&second));
+        assert!(!ui.selection().products.contains(&first));
+    }
+
     #[test]
     fn host_and_remote_are_disabled_at_start(){
         let ui=LibraryUi::new();
