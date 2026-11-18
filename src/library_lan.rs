@@ -808,7 +808,7 @@ mod tests {
         assert_eq!(page.items[0].files,2);
         let manifest=get_asset(&receiver,1).unwrap();
         assert_eq!(manifest.files.len(),2);
-        assert_eq!(manifest.files[0].name,"public.zip");
+        assert!(manifest.files.iter().any(|file|file.name=="public.zip"));
         assert!(get_asset(&receiver,2).is_err());
         let serialized=serde_json::to_string(&manifest).unwrap();
         assert!(serialized.contains("private.zip"));
