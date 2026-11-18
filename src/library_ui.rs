@@ -1465,6 +1465,73 @@ mod picker_tests {
     }
 
     #[test]
+    fn live_share_preview_counts_entire_scope_and_sqlite_attachment_sizes(){
+        use szkura::db::{ArchiveMode,NewAttachment};
+        let tmp=tempfile::tempdir().unwrap();
+        let mut db=Catalog::open(&tmp.path().join("catalog.sqlite")).unwrap();
+        let first=db.create_product("Normal A","Ropa").unwrap();
+        let second=db.create_product("Normal B","Ropa").unwrap();
+        let sensitive=db.create_product("Hidden A","Ropa").unwrap();
+        db.set_nsfw(sensitive,true).unwrap();
+        for (id,name,size,hash) in [
+            (first,"first.zip",2_048,"a".repeat(64)),
+            (second,"second.zip",3_000,"b".repeat(64)),
+            (sensitive,"private.zip",500,"c".repeat(64)),
+        ]{
+            let path=tmp.path().join(name);
+            db.add_attachment(&NewAttachment{
+                asset_id:id,name,path:&path.to_string_lossy(),checksum:&hash,
+                bytes:size,count:1,mode:ArchiveMode::Reference,
+            }).unwrap();
+        }
+        let mut ui=LibraryUi::new();
+        ui.host_products=load_publishable_products(&db).unwrap();
+        ui.host_product_ids=ui.host_products.iter().map(|asset|asset.id).collect();
+        ui.host_sensitive_ids=ui.host_products.iter()
+            .filter(|asset|asset.nsfw).map(|asset|asset.id).collect();
+        assert_eq!(ui.publication_preview(),PublicationPreview{
+            visible:2,files:2,bytes:5_048,hidden:1,hidden_nsfw:1,
+        });
+        // The visual filter does not change which assets get published.
+        ui.host_filter="Normal A".into();
+        assert_eq!(ui.picker_indices().len(),1);
+        assert_eq!(ui.publication_preview().bytes,5_048);
+        ui.toggle_selected(first);
+        assert_eq!(ui.publication_preview(),PublicationPreview{
+            visible:1,files:1,bytes:3_000,hidden:2,hidden_nsfw:1,
+        });
+        ui.host_mode=PublishMode::Include;
+        assert_eq!(ui.publication_preview(),PublicationPreview{
+            visible:0,files:0,bytes:0,hidden:3,hidden_nsfw:1,
+        });
+        ui.toggle_selected(second);
+        assert_eq!(ui.publication_preview().bytes,3_000);
+        ui.host_publish_nsfw=true;
+        ui.toggle_selected(sensitive);
+        assert_eq!(ui.publication_preview(),PublicationPreview{
+            visible:2,files:2,bytes:3_500,hidden:1,hidden_nsfw:0,
+        });
+    }
+
+    #[test]
+    fn publication_preview_enforces_current_capacity_limits(){
+        let small=PublicationPreview{
+            visible:2,files:2,bytes:1_024,hidden:0,hidden_nsfw:0,
+        };
+        assert!(!small.over_limit());
+        assert!(!PublicationPreview{
+            files:library_lan::MAX_FILES as u64,
+            bytes:library_lan::MAX_TOTAL_BYTES,..small
+        }.over_limit());
+        assert!(PublicationPreview{
+            files:library_lan::MAX_FILES as u64+1,..small
+        }.over_limit());
+        assert!(PublicationPreview{
+            bytes:library_lan::MAX_TOTAL_BYTES+1,..small
+        }.over_limit());
+    }
+
+    #[test]
     fn pending_publication_consent_blocks_concurrent_tunnel_workflows(){
         let mut ui=LibraryUi::new();
         assert!(!ui.host_busy());
