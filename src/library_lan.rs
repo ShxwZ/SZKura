@@ -710,6 +710,20 @@ fn local_copy_is_valid(attachments:&[crate::db::Attachment],file:&RemoteFile,
     })
 }
 
+/// Accurate detail check, including hash verification on disk. Used in a
+/// worker so large local archives never block the UI rendering loop.
+pub fn verified_local_state(db_path:&Path,asset:&RemoteAsset)->Result<RemoteLocalState>{
+    let db=Catalog::open(db_path)?;
+    let Some(id)=db.resolve_remote_product(&asset.origin_key,&asset.booth_url)?
+        else{return Ok(RemoteLocalState::New)};
+    let attachments=db.attachments_for(id)?;
+    let cancel=AtomicBool::new(false);
+    let pending=asset.files.iter()
+        .filter(|file|!local_copy_is_valid(&attachments,file,&cancel)).count();
+    Ok(if pending==0{RemoteLocalState::Complete}
+        else{RemoteLocalState::NeedsUpdate(pending)})
+}
+
 /// Import or update the complete product, never a subset of its files.
 /// Downloads are fully verified before one atomic SQLite transaction.
 pub fn import_asset(conn:&RemoteConnection,id:u64,db_path:&Path,
