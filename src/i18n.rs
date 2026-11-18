@@ -405,6 +405,36 @@ pub fn translate(language:Language,s:&str)->&str {
         "archivos disponibles"=>"available files",
         "Biblioteca compartida activa."=>"Library sharing active.",
         "Compartiendo biblioteca (fichas)"=>"Sharing library (products)",
+        "Modo de publicación:"=>"Publishing mode:",
+        "Compartir salvo excluidas"=>"Share all except excluded",
+        "Compartir solo incluidas"=>"Share only included",
+        "Se compartirán todas las fichas salvo las excluidas al iniciar la sesión."=>"When started, all products except excluded ones will be shared.",
+        "Solo se compartirán las fichas marcadas como incluidas."=>"Only products marked as included will be shared.",
+        "Permitir compartir también fichas NSFW"=>"Allow sharing NSFW products too",
+        "Fichas que se compartirán"=>"Products to be shared",
+        "Nombre que verá el visitante"=>"Library name shown to visitors",
+        "Mi biblioteca compartida"=>"My shared library",
+        "Solo excluidas"=>"Excluded only",
+        "Excluir ficha"=>"Exclude product",
+        "Volver a incluir"=>"Include again",
+        "Nuevo en mi biblioteca"=>"New to my library",
+        "Ya en mi biblioteca"=>"Already in my library",
+        "Archivos por actualizar"=>"Files need updating",
+        "Comprobando disponibilidad local"=>"Checking local files",
+        "Ya está en mi biblioteca"=>"Already in my library",
+        "Actualizar ficha completa"=>"Update full product",
+        "Importar ficha completa"=>"Import full product",
+        "Se comprobarán los archivos existentes y solo se descargarán los nuevos o cambiados."=>"Existing files will be checked. Only missing or changed files will be downloaded.",
+        "La operación se confirma completa o no modifica la biblioteca. Los metadatos y versiones locales anteriores se conservan."=>"Either the full import completes or the library remains unchanged. Existing metadata and file versions are preserved.",
+        "Archivos de la ficha"=>"Product files",
+        "Archivos nuevos o modificados"=>"New or modified files",
+        "Ficha completa importada correctamente."=>"Full product imported successfully.",
+        "Ficha actualizada; las versiones locales anteriores se conservan."=>"Product updated; previous local versions were preserved.",
+        "Explorando biblioteca:"=>"Browsing library:",
+        "Catálogo ajeno en solo lectura. Importar no modifica la biblioteca anfitriona."=>"A read-only remote catalog. Importing does not modify the host's library.",
+        "Los productos se cargan al desplazarse"=>"More products load as you scroll",
+        "ESTÁS EN OTRA BIBLIOTECA · SOLO LECTURA"=>"REMOTE LIBRARY · READ ONLY",
+        "ELIGE QUÉ COMPARTIR"=>"SELECT PRODUCTS TO SHARE",
         "Selecciona las fichas y los archivos que deseas publicar."=>"Select the products and files to publish.",
         "Selecciona al menos una ficha."=>"Select at least one product.",
         "La biblioteca supera el límite de 2000 productos."=>"The library exceeds the 2,000-product limit.",
@@ -590,6 +620,22 @@ mod tests{
         assert_eq!(Language::from_id("en"),Some(Language::English));
         assert_eq!(Language::from_id("xx"),None);
     }
+    #[test]
+    fn remote_sync_and_publication_modes_translate(){
+        for (es,en) in [
+            ("Compartir salvo excluidas","Share all except excluded"),
+            ("Compartir solo incluidas","Share only included"),
+            ("Actualizar ficha completa","Update full product"),
+            ("Importar ficha completa","Import full product"),
+            ("Ya en mi biblioteca","Already in my library"),
+            ("Fichas que se compartirán","Products to be shared"),
+            ("ESTÁS EN OTRA BIBLIOTECA · SOLO LECTURA","REMOTE LIBRARY · READ ONLY"),
+        ] {
+            assert_eq!(translate(Language::Spanish,es),es);
+            assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
     #[test]
     fn shared_library_controls_are_translated() {
         for (es,en) in [
