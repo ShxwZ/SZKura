@@ -376,6 +376,12 @@ pub fn translate(language:Language,s:&str)->&str {
         "Detener biblioteca compartida"=>"Stop sharing library",
         "Para cambiar los permisos, detén la sesión y vuelve a compartir."=>"To change permissions, stop sharing and start a new session.",
         "Preparando fichas y permisos..."=>"Preparing products and permissions...",
+        "Resumen de publicación"=>"Sharing overview",
+        "Fichas no compartidas"=>"Products not shared",
+        "NSFW ocultas"=>"Hidden NSFW products",
+        "Estimación basada en SQLite. Los filtros solo cambian lo que ves, no lo que se publicará."=>"Estimate from SQLite. Filters change what you see, not what you share.",
+        "Selección supera los límites"=>"Selection exceeds current limits",
+        "Tamaño total compartido"=>"Total shared size",
         "Cargar productos para seleccionar"=>"Load products for selection",
         "Fichas seleccionadas"=>"Selected products",
         "Limpiar selección"=>"Clear selection",
@@ -643,6 +649,20 @@ mod tests{
             ("Fichas que se compartirán","Products to be shared"),
             ("ESTÁS EN OTRA BIBLIOTECA · SOLO LECTURA","REMOTE LIBRARY · READ ONLY"),
         ] {
+            assert_eq!(translate(Language::Spanish,es),es);
+            assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
+    #[test]
+    fn publication_summary_is_translated(){
+        for (es,en) in [
+            ("Resumen de publicación","Sharing overview"),
+            ("Fichas no compartidas","Products not shared"),
+            ("NSFW ocultas","Hidden NSFW products"),
+            ("Selección supera los límites","Selection exceeds current limits"),
+            ("Tamaño total compartido","Total shared size"),
+        ]{
             assert_eq!(translate(Language::Spanish,es),es);
             assert_eq!(translate(Language::English,es),en);
         }
