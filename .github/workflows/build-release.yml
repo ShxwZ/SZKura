@@ -10,10 +10,11 @@ on:
 permissions:
   contents: read
 
-# Serialize releases so two manual/push runs cannot choose the same tag.
+# Serialize main releases; cancel superseded PR runs so only the latest
+# reviewed commit consumes Windows/Linux build resources.
 concurrency:
   group: szkura-build-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   version:
