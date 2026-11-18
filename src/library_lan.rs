@@ -666,36 +666,54 @@ pub fn fetch_cover(conn:&RemoteConnection,id:u64)->Result<Option<Vec<u8>>>{
 }
 
 fn download_file(conn:&RemoteConnection,file:&RemoteFile,dest:&Path,cancel:&AtomicBool)
-    ->Result<()> {
+    ->Result<()>{
     if !approved_name(&file.name) || file.size>MAX_FILE_BYTES ||
-        file.sha256.len()!=64 || !file.sha256.bytes().all(|c|c.is_ascii_hexdigit()) {
+        file.sha256.len()!=64 || !file.sha256.bytes().all(|c|c.is_ascii_hexdigit()) ||
+        file.blake3.len()!=64 || !file.blake3.bytes().all(|c|c.is_ascii_hexdigit()) {
         bail!("Archivo remoto no válido");
     }
     let mut source=response(conn,&format!("/v1/files/{}",file.id))?;
     let mut target=File::create(dest)?;
-    let mut digest=Sha256::new();
+    let mut sha=Sha256::new();
+    let mut native=blake3::Hasher::new();
     let mut remaining=file.size;
     let mut buf=[0u8;64*1024];
-    loop {
-        if cancel.load(Ordering::Relaxed) { bail!("Descarga cancelada"); }
-        let n=source.read(&mut buf)?;
-        if n==0 {break;}
-        if n as u64>remaining {bail!("Archivo remoto excede el tamaño declarado");}
-        target.write_all(&buf[..n])?;
-        digest.update(&buf[..n]);
-        remaining-=n as u64;
+    loop{
+        if cancel.load(Ordering::Relaxed){bail!("Descarga cancelada");}
+        let count=source.read(&mut buf)?;
+        if count==0{break;}
+        if count as u64>remaining{bail!("Archivo remoto demasiado grande");}
+        target.write_all(&buf[..count])?;
+        sha.update(&buf[..count]);
+        native.update(&buf[..count]);
+        remaining-=count as u64;
     }
     target.flush()?;
-    if remaining!=0 || format!("{:x}",digest.finalize())!=file.sha256.to_lowercase() {
-        bail!("Archivo remoto incompleto o SHA-256 incorrecto");
+    target.sync_all()?;
+    if remaining!=0 || format!("{:x}",sha.finalize())!=file.sha256.to_lowercase()
+        || native.finalize().to_hex().as_str()!=file.blake3{
+        bail!("Archivo incompleto o hash SHA-256/BLAKE3 incorrecto");
     }
     Ok(())
 }
+/// Verify registered local content before trusting the SQLite cache. Never
+/// skip a download based only on a filename, timestamp or stale stored hash.
+fn local_copy_is_valid(attachments:&[crate::db::Attachment],file:&RemoteFile,
+    cancel:&AtomicBool)->bool{
+    attachments.iter().any(|entry|{
+        if entry.original_name!=file.name || entry.checksum!=file.blake3
+            || u64::try_from(entry.bytes).ok()!=Some(file.size){return false;}
+        let path=Path::new(&entry.stored_path);
+        if regular_file(path,MAX_FILE_BYTES).ok()!=Some(file.size){return false;}
+        file_digest(path,cancel).ok().is_some_and(|(sha,native)|
+            sha==file.sha256 && native==file.blake3)
+    })
+}
 
-/// Import metadata without downloading, or selectively download and attach
-/// only previously approved files. Never overwrite existing BOOTH metadata.
-pub fn import_asset(conn:&RemoteConnection,id:u64,chosen:&BTreeSet<u64>,
-    db_path:&Path,library:&Path,covers_dir:&Path,cancel:&AtomicBool)->Result<i64> {
+/// Import or update the complete product, never a subset of its files.
+/// Downloads are fully verified before one atomic SQLite transaction.
+pub fn import_asset(conn:&RemoteConnection,id:u64,db_path:&Path,
+    library:&Path,covers_dir:&Path,cancel:&AtomicBool)->Result<RemoteCommitReport>{
     let asset=get_asset(conn,id)?;
     if asset.description.len()>32_000 || asset.tags.len()>8_000
         || asset.creator.len()>512 || asset.avatars.iter().any(|n|n.len()>70)
@@ -703,65 +721,52 @@ pub fn import_asset(conn:&RemoteConnection,id:u64,chosen:&BTreeSet<u64>,
         bail!("Metadatos remotos demasiado grandes");
     }
     if !asset.booth_url.is_empty(){booth::validate_booth_url(&asset.booth_url)?;}
-    let allowed:BTreeSet<u64>=asset.files.iter().map(|f|f.id).collect();
-    if !chosen.is_subset(&allowed) {bail!("Uno de los archivos no está publicado");}
-    let total=asset.files.iter().filter(|f|chosen.contains(&f.id))
-        .try_fold(0u64,|sum,f|sum.checked_add(f.size)).context("Tamaño inválido")?;
-    if total>MAX_TOTAL_BYTES {bail!("Selección demasiado grande");}
-    let temp=if chosen.is_empty(){None}else{
-        fs::create_dir_all(library)?;
-        Some(tempfile::tempdir_in(library)?)
-    };
-    let mut downloaded=Vec::new();
-    if let Some(dir)=&temp {
-        for file in &asset.files {
-            if !chosen.contains(&file.id) {continue;}
-            if cancel.load(Ordering::Relaxed) {bail!("Importación cancelada");}
-            let folder=dir.path().join(file.id.to_string());
-            fs::create_dir(&folder)?;
-            let dest=folder.join(&file.name);
-            download_file(conn,file,&dest,cancel)?;
-            downloaded.push(dest);
-        }
+    let total=asset.files.iter().try_fold(0u64,|sum,file|
+        sum.checked_add(file.size)).context("Tamaño inválido")?;
+    if total>MAX_TOTAL_BYTES{bail!("Ficha demasiado grande");}
+    let mut db=Catalog::open(db_path)?;
+    let configured=db.storage_root()?.context("Configura la carpeta de assets")?;
+    fs::create_dir_all(library)?;
+    if fs::canonicalize(library)?!=configured{
+        bail!("La carpeta principal de assets ha cambiado");
     }
-    let cover=if asset.has_cover {
-        match fetch_cover(conn,id)? {
-            Some(bytes) if bytes.len()<=MAX_COVER_BYTES as usize => {
-                if decode_cover_small(&bytes,320).is_some(){Some(bytes)}
-                else{None}
-            },
-            _=>None,
-        }
+    let existing=db.resolve_remote_product(&asset.origin_key,&asset.booth_url)?;
+    let local=if let Some(id)=existing{db.attachments_for(id)?}else{Vec::new()};
+    let staging=tempfile::tempdir_in(library)?;
+    let mut downloaded=Vec::new();
+    for file in &asset.files{
+        if cancel.load(Ordering::Relaxed){bail!("Importación cancelada");}
+        if local_copy_is_valid(&local,file,cancel){continue;}
+        let folder=staging.path().join(file.id.to_string());
+        fs::create_dir(&folder)?;
+        let dest=folder.join(&file.name);
+        download_file(conn,file,&dest,cancel)?;
+        downloaded.push(RemoteStagedFile{
+            original_name:file.name.clone(),source:dest,
+            blake3:file.blake3.clone(),bytes:file.size,
+        });
+    }
+    let cover=if existing.is_none() && asset.has_cover{
+        let bytes=fetch_cover(conn,id)?.context("La portada publicada no está disponible")?;
+        if decode_cover_small(&bytes,320).is_none(){bail!("Portada remota dañada");}
+        let ext=match image::guess_format(&bytes)?{
+            image::ImageFormat::Png=>"png",
+            image::ImageFormat::Jpeg=>"jpg",
+            image::ImageFormat::WebP=>"webp",
+            _=>bail!("Formato de portada no permitido"),
+        };
+        let dest=staging.path().join(format!("cover.{ext}"));
+        fs::write(&dest,bytes)?;
+        Some((dest,ext.to_owned()))
     }else{None};
     if cancel.load(Ordering::Relaxed){bail!("Importación cancelada");}
-    let mut db=Catalog::open(db_path)?;
-    let existing=if asset.booth_url.is_empty(){None}
-        else{db.existing_booth_link(&asset.booth_url)?};
-    let product=match existing {
-        Some(existing)=>existing,
-        None=>{
-            let id=db.create_product(&asset.title,&asset.category)?;
-            db.update_details(id,&asset.title,&asset.category,&asset.creator,
-                &asset.tags,&asset.description)?;
-            db.set_avatars(id,&asset.avatars.join(", "))?;
-            db.set_nsfw(id,asset.nsfw)?;
-            if !asset.booth_url.is_empty(){db.associate_booth(id,&asset.booth_url)?;}
-            if let Some(bytes)=cover {
-                fs::create_dir_all(covers_dir)?;
-                let name=format!("remote-{:x}.img",Sha256::digest(&bytes));
-                let path=covers_dir.join(name);
-                if !path.exists(){fs::write(&path,bytes)?;}
-                db.set_cover(id,&path.to_string_lossy())?;
-            }
-            id
-        }
+    let record=RemoteImportRecord{
+        origin_key:asset.origin_key,booth_url:asset.booth_url,
+        title:asset.title,category:asset.category,creator:asset.creator,
+        tags:asset.tags,description:asset.description,
+        avatars:asset.avatars,nsfw:asset.nsfw,cover,
     };
-    drop(db);
-    if !downloaded.is_empty() {
-        let report=managed_storage::import_paths(db_path,library,&downloaded,product,false)?;
-        if report.rejected>0 {bail!("No se pudieron importar algunos adjuntos");}
-    }
-    Ok(product)
+    db.commit_remote_import(library,covers_dir,&record,&downloaded)
 }
 
 #[cfg(test)]
