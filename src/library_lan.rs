@@ -365,27 +365,32 @@ pub struct LibrarySession {
     pub visible:usize,
     pub downloadable:usize,
     stop:Arc<AtomicBool>,
+    tunnel:Option<share_transfer::QuickTunnel>,
 }
 impl LibrarySession {
-    pub fn stop(&self) { self.stop.store(true,Ordering::Relaxed); }
+    pub fn stop(&self) {
+        self.stop.store(true,Ordering::Relaxed);
+        if let Some(tunnel)=self.tunnel.as_ref(){tunnel.stop();}
+    }
 }
 impl Drop for LibrarySession {
     fn drop(&mut self) { self.stop(); }
 }
 
-/// Binds only a private IPv4 interface (or loopback if none exists).
-/// Never activates on startup; the UI must call this after explicit selection.
-pub fn start_library(db_path:&Path,selection:&ShareSelection,cancel:&AtomicBool)->Result<LibrarySession> {
+/// Manually start a private LAN session, or a loopback-only session published
+/// through the existing verified Cloudflare component after separate consent.
+pub fn start_library(db_path:&Path,selection:&ShareSelection,data_dir:&Path,
+    internet:bool,cancel:&AtomicBool)->Result<LibrarySession> {
     let snapshot=snapshot(db_path,selection,cancel)?;
     if cancel.load(Ordering::Relaxed) { bail!("Operación cancelada"); }
-    let ip=selected_lan_ip();
+    let ip=if internet{Ipv4Addr::LOCALHOST}else{selected_lan_ip()};
     let server=Server::http(format!("{ip}:0"))
         .map_err(|e|anyhow!("No se pudo abrir el puerto LAN: {e}"))?;
     let address=server.server_addr().to_ip().context("Puerto de servidor no disponible")?;
     let token=random_secret();
     let key=random_secret();
     let prefix=format!("/l/{token}");
-    let invitation=format!("http://{ip}:{}{}#key={key}",address.port(),prefix);
+    let local_url=format!("http://{ip}:{}{}#key={key}",address.port(),prefix);
     let stop=Arc::new(AtomicBool::new(false));
     let stop_thread=Arc::clone(&stop);
     let active=Arc::new(AtomicUsize::new(0));
@@ -415,7 +420,24 @@ pub fn start_library(db_path:&Path,selection:&ShareSelection,cancel:&AtomicBool)
             });
         }
     });
-    Ok(LibrarySession {invitation,visible,downloadable:files,stop})
+    let tunnel=if internet{
+        let result=share_transfer::start_quick_tunnel(data_dir,address.port(),cancel);
+        match result {
+            Ok(tunnel)=>Some(tunnel),
+            Err(err)=>{
+                stop.store(true,Ordering::Relaxed);
+                return Err(err);
+            },
+        }
+    }else{None};
+    if cancel.load(Ordering::Relaxed){
+        stop.store(true,Ordering::Relaxed);
+        bail!("Operación cancelada");
+    }
+    let invitation=if let Some(ref tunnel)=tunnel{
+        format!("{}{}#key={key}",tunnel.base_url,prefix)
+    }else{local_url};
+    Ok(LibrarySession {invitation,visible,downloadable:files,stop,tunnel})
 }
 
 #[derive(Clone)]
@@ -428,17 +450,28 @@ pub struct RemoteConnection {
 }
 fn lan_url(invitation:&str)->Result<(Url,String)> {
     let mut url=Url::parse(invitation.trim()).context("Invitación no válida")?;
-    if url.scheme()!="http" || url.username()!="" || url.password().is_some()
-        || url.query().is_some() {
-        bail!("La invitación debe usar HTTP en una LAN privada");
+    if url.username()!="" || url.password().is_some() || url.query().is_some() {
+        bail!("Formato de invitación no válido");
     }
-    let ip=url.host_str().context("Invitación sin dirección")?
-        .parse::<IpAddr>().context("Usa una dirección IP privada, no un nombre DNS")?;
-    match ip {
-        IpAddr::V4(ip) if ip.is_private() || ip.is_loopback() => {},
-        _=>bail!("Solo se permiten direcciones IPv4 privadas o de prueba local"),
+    match url.scheme(){
+        "http"=>{
+            let ip=url.host_str().context("Invitación sin dirección")?
+                .parse::<IpAddr>().context("Solo IP privada para conexiones HTTP")?;
+            match ip{
+                IpAddr::V4(ip) if ip.is_private() || ip.is_loopback()=>{},
+                _=>bail!("HTTP únicamente en IPv4 de LAN privada"),
+            }
+            if url.port().is_none(){bail!("Falta el puerto de la LAN");}
+        },
+        "https"=>{
+            let hostname=url.host_str().unwrap_or("");
+            if !hostname.ends_with(".trycloudflare.com")
+                || hostname==".trycloudflare.com" || url.port().is_some() {
+                bail!("La invitación HTTPS debe ser de Cloudflare Quick Tunnel");
+            }
+        },
+        _=>bail!("Se requiere HTTP privado o HTTPS de Cloudflare"),
     }
-    if url.port().is_none() { bail!("La invitación requiere un puerto LAN"); }
     let components:Vec<_>=url.path().split('/').collect();
     if components.len()!=3 || components[0]!="" || components[1]!="l"
         || !valid_secret(components[2]) {
@@ -689,6 +722,9 @@ mod tests {
         let (base,key)=lan_url(&link).unwrap();
         assert_eq!(key,secret);
         assert_eq!(base.as_str(),format!("http://192.168.1.23:4400/l/{token}"));
+        let cloudflare=format!("https://library-demo.trycloudflare.com/l/{token}#key={secret}");
+        assert!(lan_url(&cloudflare).is_ok());
+        assert!(lan_url(&format!("https://library-demo.trycloudflare.com.evil.org/l/{token}#key={secret}")).is_err());
         for invalid in [
             format!("http://1.2.3.4:4400/l/{token}#key={secret}"),
             format!("http://127.0.0.1:4400/l/{token}"),
