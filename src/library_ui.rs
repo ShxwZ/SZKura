@@ -463,7 +463,7 @@ impl LibraryUi {
         if self.host_rx.is_some(){
             ui.horizontal(|ui|{
                 ui.spinner();
-                ui.label(tr("Preparando catálogo y verificando adjuntos..."));
+                ui.label(tr("Preparando fichas y permisos..."));
                 if ui.button(tr("Cancelar")).clicked(){
                     self.host_cancel.store(true,Ordering::Relaxed);
                 }
@@ -561,7 +561,7 @@ impl LibraryUi {
         let name=self.host_name.trim().to_owned();
         let (tx,rx)=mpsc::channel();
         self.host_rx=Some(rx);
-        self.host_status=tr("Preparando catálogo y verificando adjuntos...").into();
+        self.host_status=tr("Preparando fichas y permisos...").into();
         thread::spawn(move||{
             let result=(||{
                 if install{share_transfer::install_component_with_consent(&data)?;}
