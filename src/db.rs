@@ -638,7 +638,7 @@ impl Catalog {
         let mut pending=0usize;
         for (name,hash,size) in expected{
             let matches=attachments.iter().any(|entry|{
-                entry.original_name==*name && entry.checksum==*hash
+                entry.checksum==*hash
                     && u64::try_from(entry.bytes).ok()==Some(*size)
                     && fs::symlink_metadata(&entry.stored_path).ok().is_some_and(|meta|
                         meta.is_file() && !meta.file_type().is_symlink()
@@ -721,7 +721,6 @@ impl Catalog {
             let identical:Option<i64>=tx.query_row(
                 "SELECT id FROM attachments WHERE asset_id=?1 AND checksum=?2",
                 params![id,file.blake3],|row|row.get(0)).optional()?;
-            if identical.is_some(){continue;}
             let target=folder.join(format!("{}-{}",
                 &file.blake3[..16],make_safe(&file.original_name,85)));
             if target.exists(){
@@ -745,11 +744,18 @@ impl Catalog {
                     .context("No se pudo incorporar el archivo verificado")?;
                 rollback.created.push(target.clone());
             }
-            tx.execute("INSERT INTO attachments(
-                asset_id,original_name,stored_path,checksum,bytes,file_count,storage_mode)
-                VALUES(?1,?2,?3,?4,?5,0,'copy')",
-                params![id,file.original_name,target.to_string_lossy().as_ref(),
-                    file.blake3,i64::try_from(file.bytes)?])?;
+            if let Some(existing_id)=identical {
+                tx.execute("UPDATE attachments SET stored_path=?1,storage_mode='copy',
+                    bytes=?2 WHERE id=?3 AND asset_id=?4 AND checksum=?5",
+                    params![target.to_string_lossy().as_ref(),
+                        i64::try_from(file.bytes)?,existing_id,id,file.blake3])?;
+            }else{
+                tx.execute("INSERT INTO attachments(
+                    asset_id,original_name,stored_path,checksum,bytes,file_count,storage_mode)
+                    VALUES(?1,?2,?3,?4,?5,0,'copy')",
+                    params![id,file.original_name,target.to_string_lossy().as_ref(),
+                        file.blake3,i64::try_from(file.bytes)?])?;
+            }
             new_files+=1;
         }
         tx.execute("INSERT OR IGNORE INTO managed_folders(asset_id,folder_path)
@@ -765,8 +771,15 @@ impl Catalog {
                 let name=format!("remote-{}.{}",blake3::hash(&bytes).to_hex(),extension);
                 let final_cover=covers_dir.join(name);
                 if !final_cover.exists(){
-                    fs::rename(path,&final_cover)?;
-                    rollback.created.push(final_cover.clone());
+                    let mut temp=tempfile::NamedTempFile::new_in(covers_dir)?;
+                    std::io::copy(&mut fs::File::open(path)?,&mut temp)?;
+                    temp.as_file_mut().sync_all()?;
+                    match temp.persist_noclobber(&final_cover){
+                        Ok(_)=>rollback.created.push(final_cover.clone()),
+                        Err(error)=>{
+                            if !final_cover.is_file(){return Err(error.error.into());}
+                        },
+                    }
                 }
                 tx.execute("UPDATE assets SET image_path=?1 WHERE id=?2",
                     params![final_cover.to_string_lossy().as_ref(),id])?;

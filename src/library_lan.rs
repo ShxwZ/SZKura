@@ -701,7 +701,7 @@ fn download_file(conn:&RemoteConnection,file:&RemoteFile,dest:&Path,cancel:&Atom
 fn local_copy_is_valid(attachments:&[crate::db::Attachment],file:&RemoteFile,
     cancel:&AtomicBool)->bool{
     attachments.iter().any(|entry|{
-        if entry.original_name!=file.name || entry.checksum!=file.blake3
+        if entry.checksum!=file.blake3
             || u64::try_from(entry.bytes).ok()!=Some(file.size){return false;}
         let path=Path::new(&entry.stored_path);
         if regular_file(path,MAX_FILE_BYTES).ok()!=Some(file.size){return false;}
