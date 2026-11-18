@@ -829,7 +829,8 @@ impl BoothApp {
                   path: &str, width: f32, height: f32, max_side:u32) {
         let texture=self.image_for(ctx,path,max_side);
         ui_support::paint_cover(ui,texture.as_ref().map(|t|&t.foreground),
-            texture.as_ref().and_then(|t|t.background.as_ref()),width,height);
+            texture.as_ref().and_then(|t|t.background.as_ref()),width,height,
+            tr("Sin portada"));
     }
 
     /// Shared edit/new cover picker. The preview and action share one bounded

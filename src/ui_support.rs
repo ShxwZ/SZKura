@@ -147,7 +147,8 @@ pub fn fitted_cover_rect(frame:Rect,natural:Vec2)->Rect{
 /// Exactly one cover painter in SZKura. Texture loading and decoding happen
 /// in their respective background workers; this only draws ready textures.
 pub fn paint_cover(ui:&mut Ui,foreground:Option<&egui::TextureHandle>,
-    backdrop:Option<&egui::TextureHandle>,width:f32,height:f32){
+    backdrop:Option<&egui::TextureHandle>,width:f32,height:f32,
+    placeholder:&str){
     let (rect,_)=ui.allocate_exact_size(egui::vec2(width,height),Sense::hover());
     ui.painter().rect_filled(rect,10.0,theme::colors().faint_bg);
     if let Some(tex)=foreground {
@@ -163,7 +164,7 @@ pub fn paint_cover(ui:&mut Ui,foreground:Option<&egui::TextureHandle>,
             .corner_radius(4).paint_at(ui,bounds);
     }else{
         ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,
-            tr("Sin portada"),egui::FontId::proportional(13.0),theme::colors().muted);
+            placeholder,egui::FontId::proportional(13.0),theme::colors().muted);
     }
 }
 
