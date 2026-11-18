@@ -29,7 +29,8 @@ const MAX_PRODUCTS: usize = 2_000;
 pub const MAX_FILES: usize = 4_096;
 const MAX_FILE_BYTES: u64 = 128 * 1024 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
-const MAX_COVER_BYTES: u64 = 8 * 1024 * 1024;
+// Match the native library's cover budget: 32 MiB and 24 MP.
+const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_JSON_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 4;
 const PAGE_SIZE: usize = 32;
@@ -657,21 +658,35 @@ pub fn get_asset(conn:&RemoteConnection,id:u64)->Result<RemoteAsset>{
 }
 /// Decode untrusted covers only after checking header dimensions. Prevents
 /// decompressing a tiny compressed image into an enormous pixel allocation.
-pub fn decode_cover_small(bytes:&[u8], max_side:u32)->Option<image::RgbaImage> {
+/// Same validation, resize filter and 64px blurred backdrop as native covers.
+/// Decode only after header dimension checks. This work runs off the UI thread.
+pub fn decode_cover_prepared(bytes:&[u8],max_side:u32)
+    ->Option<(image::RgbaImage,image::RgbaImage)>{
     if bytes.len() as u64>MAX_COVER_BYTES || max_side==0 {return None;}
     let header=image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format().ok()?;
     let (width,height)=header.into_dimensions().ok()?;
-    if width==0 || height==0 || width>6_000 || height>6_000
+    if width==0 || height==0 || width>8_192 || height>8_192
         || width as u64*height as u64>24_000_000 {return None;}
-    let decoded=image::load_from_memory(bytes).ok()?;
-    Some(decoded.thumbnail(max_side,max_side).to_rgba8())
+    let original=image::load_from_memory(bytes).ok()?;
+    let resized=if width>max_side || height>max_side{
+        original.resize(max_side,max_side,image::imageops::FilterType::Triangle)
+    }else{original};
+    let small=resized.resize_to_fill(64,64,image::imageops::FilterType::Triangle)
+        .to_rgba8();
+    let backdrop=image::imageops::blur(&small,5.0);
+    Some((resized.to_rgba8(),backdrop))
+}
+pub fn decode_cover_small(bytes:&[u8],max_side:u32)->Option<image::RgbaImage>{
+    decode_cover_prepared(bytes,max_side).map(|(main,_)|main)
 }
 
 pub fn fetch_cover(conn:&RemoteConnection,id:u64)->Result<Option<Vec<u8>>>{
     let mut url=conn.base.clone();
     url.set_path(&format!("{}/v1/covers/{id}",conn.base.path()));
-    let mut reply=conn.client.get(url).header(KEY_HEADER,&conn.key).send()?;
+    // A missing/slow cover must not hold all other thumbnails hostage.
+    let mut reply=conn.client.get(url).header(KEY_HEADER,&conn.key)
+        .timeout(Duration::from_secs(25)).send()?;
     if reply.status()==reqwest::StatusCode::NOT_FOUND { return Ok(None); }
     reply=reply.error_for_status()?;
     if reply.content_length().is_some_and(|n|n>MAX_COVER_BYTES) {
