@@ -2188,7 +2188,6 @@ impl BoothApp {
                         organize=true;
                     }
                 }
-                }
                 });
             });
         if let Some(kind)=requested_palette {
