@@ -21,7 +21,8 @@ use std::{
 };
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
-use crate::{booth, db::{Catalog, CATEGORIES, FileFilter}, managed_storage, share_transfer};
+use crate::{booth, db::{Catalog, CATEGORIES, FileFilter, RemoteFileState,
+    RemoteImportRecord,RemoteStagedFile,RemoteCommitReport},share_transfer};
 
 pub const PROTOCOL_VERSION: u32 = 2;
 const KEY_HEADER: &str = "X-SZKura-Library-Key";
@@ -89,6 +90,8 @@ pub struct RemoteSummary {
     pub has_cover: bool,
     pub files: usize,
     pub total_bytes: u64,
+    #[serde(skip)]
+    pub local_state:RemoteLocalState,
 }
 impl From<&RemoteAsset> for RemoteSummary {
     fn from(asset: &RemoteAsset) -> Self {
@@ -103,8 +106,18 @@ impl From<&RemoteAsset> for RemoteSummary {
             avatars: asset.avatars.clone(), nsfw: asset.nsfw,
             has_cover: asset.has_cover, files: asset.files.len(),
             total_bytes:asset.files.iter().map(|f|f.size).sum(),
+            local_state:RemoteLocalState::Unknown,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RemoteLocalState {
+    #[default]
+    Unknown,
+    New,
+    Complete,
+    NeedsUpdate(usize),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -589,6 +602,29 @@ pub fn browse(conn:&RemoteConnection,query:&str,category:&str,avatar:&str,
     if page.items.len()>PAGE_SIZE || page.total>MAX_PRODUCTS {bail!("Página remota no válida");}
     Ok(page)
 }
+/// Local status is evaluated by the receiving application's background worker.
+/// It is never sent by the host or included in public catalog metadata.
+pub fn local_state(db:&Catalog,origin_key:&str,booth_url:&str,
+    signatures:&[RemoteFileSignature])->Result<RemoteLocalState>{
+    let Some(id)=db.resolve_remote_product(origin_key,booth_url)? else {
+        return Ok(RemoteLocalState::New);
+    };
+    let expected=signatures.iter().map(|entry|
+        (entry.name.clone(),entry.blake3.clone(),entry.size)).collect::<Vec<_>>();
+    Ok(match db.remote_file_state(id,&expected)? {
+        RemoteFileState::Complete=>RemoteLocalState::Complete,
+        RemoteFileState::NeedsUpdate(count)=>RemoteLocalState::NeedsUpdate(count),
+    })
+}
+pub fn decorate_local_states(db_path:&Path, page:&mut RemotePage)->Result<()>{
+    let db=Catalog::open(db_path)?;
+    for item in &mut page.items {
+        item.local_state=local_state(&db,&item.origin_key,&item.booth_url,
+            &item.signatures)?;
+    }
+    Ok(())
+}
+
 pub fn get_asset(conn:&RemoteConnection,id:u64)->Result<RemoteAsset>{
     let asset:RemoteAsset=limited_json(response(conn,&format!("/v1/assets/{id}"))?)?;
     if asset.id!=id || asset.origin_key.len()!=64
