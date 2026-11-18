@@ -445,17 +445,32 @@ impl LibraryUi {
             });
             return;
         }
+        if !self.host_loaded && self.host_load_rx.is_none(){
+            self.load_host_products(db_path);
+        }
         if self.host_load_rx.is_some(){
             ui.horizontal(|ui|{ui.spinner();ui.label(tr("Cargando selección de productos..."));});
         }
         ui.add_space(9.0);
+        self.mode_options(ui);
+        ui.label(RichText::new(tr(if self.mode_is_exclude(){
+            "Se compartirán todas las fichas salvo las excluidas al iniciar la sesión."
+        }else{
+            "Solo se compartirán las fichas marcadas como incluidas."
+        })).size(12.0).color(colors().muted));
+        ui.checkbox(&mut self.host_publish_nsfw,
+            tr("Permitir compartir también fichas NSFW"));
+        ui.add_space(5.0);
         if ui.add_enabled(self.host_load_rx.is_none(),
             egui::Button::new(tr("Elegir fichas para compartir"))
                 .min_size(egui::vec2(200.0,36.0))).clicked(){
             self.picker_open=true;
-            if self.host_products.is_empty(){self.load_host_products(db_path);}
+            if self.host_products.is_empty(){
+                self.host_loaded=false;
+                self.load_host_products(db_path);
+            }
         }
-        ui.label(RichText::new(format!("{}: {}",tr("Fichas seleccionadas"),
+        ui.label(RichText::new(format!("{}: {}",tr("Fichas que se compartirán"),
             self.selection_count())).color(colors().accent).size(13.0));
         if ui.checkbox(&mut self.internet_access,
             tr("Compartir también por Internet (Cloudflare Tunnel)")).changed(){
