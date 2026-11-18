@@ -657,4 +657,91 @@ mod tests {
         assert!(!serde_json::to_string(&snapshot.assets).unwrap().contains("PRIVADO"));
         assert!(db.get(hidden).unwrap().is_some());
     }
+
+    #[test]
+    fn private_lan_api_never_reveals_hidden_products_or_attachments() {
+        use crate::db::{ArchiveMode,NewAttachment};
+        let tmp=tempfile::tempdir().unwrap();
+        let db_path=tmp.path().join("catalog.sqlite");
+        let mut db=Catalog::open(&db_path).unwrap();
+        let hidden=db.create_product("HIDDEN_ONLY","Ropa").unwrap();
+        let visible=db.create_product("VISIBLE_ONLY","Ropa").unwrap();
+        let public_path=tmp.path().join("public.zip");
+        let secret_path=tmp.path().join("private.zip");
+        fs::write(&public_path,b"public content").unwrap();
+        fs::write(&secret_path,b"hidden content").unwrap();
+        for (product,name,path,checksum) in [
+            (visible,"public.zip",&public_path,"public_hash"),
+            (visible,"private.zip",&secret_path,"private_hash"),
+            (hidden,"private.zip",&secret_path,"secret_hash"),
+        ] {
+            db.add_attachment(&NewAttachment {
+                asset_id:product,name,path:&path.to_string_lossy(),checksum,
+                bytes:fs::metadata(path).unwrap().len() as i64,
+                count:0,mode:ArchiveMode::Reference,
+            }).unwrap();
+        }
+        let attachments=db.attachments_for(visible).unwrap();
+        let public_id=attachments.iter().find(|f|f.original_name=="public.zip").unwrap().id;
+        let mut selection=ShareSelection::default();
+        selection.products.insert(visible,[public_id].into());
+        let session=start_library(&db_path,&selection,&AtomicBool::new(false)).unwrap();
+        let receiver=connect(&session.invitation).unwrap();
+        assert_eq!(receiver.info.products,1);
+        let page=browse(&receiver,"","","",0).unwrap();
+        assert_eq!(page.total,1);
+        assert_eq!(page.items[0].id,1);
+        assert_eq!(page.items[0].title,"VISIBLE_ONLY");
+        assert_eq!(page.items[0].files,1);
+        let manifest=get_asset(&receiver,1).unwrap();
+        assert_eq!(manifest.files.len(),1);
+        assert_eq!(manifest.files[0].name,"public.zip");
+        assert!(get_asset(&receiver,2).is_err());
+        let serialized=serde_json::to_string(&manifest).unwrap();
+        assert!(!serialized.contains("private.zip"));
+        assert!(!serialized.contains("HIDDEN_ONLY"));
+        assert!(!serialized.contains(&public_path.to_string_lossy().to_string()));
+        assert!(!serialized.contains(&secret_path.to_string_lossy().to_string()));
+        let local_id_token=format!("{}/v1/library",receiver.base.as_str());
+        let client=http_client().unwrap();
+        assert_eq!(client.get(&local_id_token).send().unwrap().status(),
+            reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(client.post(&local_id_token).header(KEY_HEADER,&receiver.key)
+            .send().unwrap().status(),reqwest::StatusCode::NOT_FOUND);
+        let missing=format!("{}/v1/files/99",receiver.base.as_str());
+        assert_eq!(client.get(missing).header(KEY_HEADER,&receiver.key)
+            .send().unwrap().status(),reqwest::StatusCode::NOT_FOUND);
+        let allowed=response(&receiver,&format!("/v1/files/{}",manifest.files[0].id)).unwrap();
+        assert_eq!(allowed.bytes().unwrap().as_ref(),b"public content");
+        session.stop();
+        thread::sleep(Duration::from_millis(250));
+        assert!(browse(&receiver,"","","",0).is_err());
+    }
+
+    #[test]
+    fn metadata_only_import_keeps_host_and_existing_local_records_intact() {
+        let tmp=tempfile::tempdir().unwrap();
+        let host=tmp.path().join("host.sqlite");
+        let own=tmp.path().join("my-library.sqlite");
+        let mut db=Catalog::open(&host).unwrap();
+        let public=db.create_product("Remote product","Ropa").unwrap();
+        db.set_avatars(public,"MANUKA").unwrap();
+        db.update_details(public,"Remote product","Ropa","Creator","test","Description").unwrap();
+        drop(db);
+        let mut selected=ShareSelection::default();
+        selected.products.insert(public,BTreeSet::new());
+        let session=start_library(&host,&selected,&AtomicBool::new(false)).unwrap();
+        let conn=connect(&session.invitation).unwrap();
+        let destination=tmp.path().join("assets");
+        let covers=tmp.path().join("covers");
+        let imported=import_asset(&conn,1,&BTreeSet::new(),&own,&destination,&covers,
+            &AtomicBool::new(false)).unwrap();
+        let ours=Catalog::open(&own).unwrap();
+        let saved=ours.get(imported).unwrap().unwrap();
+        assert_eq!(saved.title,"Remote product");
+        assert_eq!(saved.avatars,"MANUKA");
+        assert!(ours.attachments_for(imported).unwrap().is_empty());
+        assert_eq!(Catalog::open(&host).unwrap().count().unwrap(),1);
+    }
+
 }
