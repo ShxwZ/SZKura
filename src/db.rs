@@ -65,6 +65,7 @@ pub struct RemoteStagedFile {
     pub source:std::path::PathBuf,
     pub blake3:String,
     pub bytes:u64,
+    pub file_count:i64,
 }
 pub struct RemoteImportRecord {
     pub origin_key:String,
@@ -723,38 +724,54 @@ impl Catalog {
                 params![id,file.blake3],|row|row.get(0)).optional()?;
             let target=folder.join(format!("{}-{}",
                 &file.blake3[..16],make_safe(&file.original_name,85)));
-            if target.exists(){
-                // Content-addressed targets must never be overwritten. A
-                // collision or changed local copy aborts the whole operation.
+            // Atomic no-overwrite hard link from the verified same-volume
+            // staging area. Fallback for filesystems without hardlink support.
+            let added=if target.exists(){false}else{
+                match fs::hard_link(&file.source,&target){
+                    Ok(())=>true,
+                    Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>false,
+                    Err(_)=>{
+                        let mut temp=tempfile::NamedTempFile::new_in(&folder)?;
+                        std::io::copy(&mut fs::File::open(&file.source)?,&mut temp)?;
+                        temp.as_file_mut().sync_all()?;
+                        match temp.persist_noclobber(&target){
+                            Ok(_)=>true,
+                            Err(error) if error.error.kind()==std::io::ErrorKind::AlreadyExists=>false,
+                            Err(error)=>return Err(error.error.into()),
+                        }
+                    },
+                }
+            };
+            if added{rollback.created.push(target.clone());}
+            else{
+                let meta=fs::symlink_metadata(&target)?;
+                if !meta.is_file() || meta.file_type().is_symlink()
+                    || meta.len()!=file.bytes{
+                    bail!("El archivo de destino no es seguro o ha cambiado");
+                }
                 let mut source=fs::File::open(&target)?;
                 let mut hash=blake3::Hasher::new();
-                let mut bytes=0u64;
                 let mut buffer=[0u8;128*1024];
-                loop {
+                loop{
                     let count=std::io::Read::read(&mut source,&mut buffer)?;
                     if count==0{break;}
                     hash.update(&buffer[..count]);
-                    bytes+=count as u64;
                 }
-                if bytes!=file.bytes || hash.finalize().to_hex().as_str()!=file.blake3{
-                    bail!("Un archivo local con el mismo nombre fue modificado");
+                if hash.finalize().to_hex().as_str()!=file.blake3{
+                    bail!("Colisión con un archivo local modificado");
                 }
-            }else{
-                fs::rename(&file.source,&target)
-                    .context("No se pudo incorporar el archivo verificado")?;
-                rollback.created.push(target.clone());
             }
             if let Some(existing_id)=identical {
                 tx.execute("UPDATE attachments SET stored_path=?1,storage_mode='copy',
-                    bytes=?2 WHERE id=?3 AND asset_id=?4 AND checksum=?5",
+                    bytes=?2,file_count=?3 WHERE id=?4 AND asset_id=?5 AND checksum=?6",
                     params![target.to_string_lossy().as_ref(),
-                        i64::try_from(file.bytes)?,existing_id,id,file.blake3])?;
+                        i64::try_from(file.bytes)?,file.file_count,existing_id,id,file.blake3])?;
             }else{
                 tx.execute("INSERT INTO attachments(
                     asset_id,original_name,stored_path,checksum,bytes,file_count,storage_mode)
-                    VALUES(?1,?2,?3,?4,?5,0,'copy')",
+                    VALUES(?1,?2,?3,?4,?5,?6,'copy')",
                     params![id,file.original_name,target.to_string_lossy().as_ref(),
-                        file.blake3,i64::try_from(file.bytes)?])?;
+                        file.blake3,i64::try_from(file.bytes)?,file.file_count])?;
             }
             new_files+=1;
         }
@@ -1344,7 +1361,7 @@ mod tests {
         };
         let report=db.commit_remote_import(&root,&covers,&incoming,&[
             RemoteStagedFile{original_name:"costume.zip".into(),source:input.clone(),
-                blake3:hash.clone(),bytes:9},
+                blake3:hash.clone(),bytes:9,file_count:1},
         ]).unwrap();
         assert_eq!(report.new_files,1);
         assert!(report.is_new);
@@ -1362,7 +1379,7 @@ mod tests {
         std::fs::write(&updated,b"version 2").unwrap();
         let second=db.commit_remote_import(&root,&covers,&incoming,&[
             RemoteStagedFile{original_name:"costume.zip".into(),source:updated,
-                blake3:blake3::hash(b"version 2").to_hex().to_string(),bytes:9},
+                blake3:blake3::hash(b"version 2").to_hex().to_string(),bytes:9,file_count:1},
         ]).unwrap();
         assert_eq!(second.asset_id,report.asset_id);
         assert!(!second.is_new);
@@ -1391,9 +1408,9 @@ mod tests {
         };
         let error=db.commit_remote_import(&root,&covers,&incoming,&[
             RemoteStagedFile{original_name:"good.zip".into(),source:good,
-                blake3:blake3::hash(b"first").to_hex().to_string(),bytes:5},
+                blake3:blake3::hash(b"first").to_hex().to_string(),bytes:5,file_count:1},
             RemoteStagedFile{original_name:"missing.zip".into(),source:missing,
-                blake3:blake3::hash(b"second").to_hex().to_string(),bytes:6},
+                blake3:blake3::hash(b"second").to_hex().to_string(),bytes:6,file_count:1},
         ]).unwrap_err();
         assert!(!error.to_string().is_empty());
         assert_eq!(db.count().unwrap(),0);
