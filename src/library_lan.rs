@@ -23,7 +23,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 use crate::{booth, db::{Catalog, CATEGORIES, FileFilter}, managed_storage, share_transfer};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 const KEY_HEADER: &str = "X-SZKura-Library-Key";
 const MAX_PRODUCTS: usize = 2_000;
 const MAX_FILES: usize = 512;
@@ -47,11 +47,13 @@ pub struct RemoteFile {
     pub name: String,
     pub size: u64,
     pub sha256: String,
+    pub blake3: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct RemoteAsset {
     pub id: u64,
+    pub origin_key:String,
     pub title: String,
     pub category: String,
     pub creator: String,
@@ -66,8 +68,18 @@ pub struct RemoteAsset {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct RemoteFileSignature {
+    pub name:String,
+    pub blake3:String,
+    pub size:u64,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct RemoteSummary {
     pub id: u64,
+    pub origin_key:String,
+    pub booth_url:String,
+    pub signatures:Vec<RemoteFileSignature>,
     pub title: String,
     pub category: String,
     pub creator: String,
@@ -81,7 +93,12 @@ pub struct RemoteSummary {
 impl From<&RemoteAsset> for RemoteSummary {
     fn from(asset: &RemoteAsset) -> Self {
         Self {
-            id: asset.id, title: asset.title.clone(), category: asset.category.clone(),
+            id: asset.id, origin_key:asset.origin_key.clone(),
+            booth_url:asset.booth_url.clone(),
+            signatures:asset.files.iter().map(|f|RemoteFileSignature{
+                name:f.name.clone(),blake3:f.blake3.clone(),size:f.size,
+            }).collect(),
+            title: asset.title.clone(), category: asset.category.clone(),
             creator: asset.creator.clone(), tags: asset.tags.clone(),
             avatars: asset.avatars.clone(), nsfw: asset.nsfw,
             has_cover: asset.has_cover, files: asset.files.len(),
@@ -111,6 +128,7 @@ struct ServedFile {
     path: PathBuf,
     size: u64,
     sha256: String,
+    blake3:String,
 }
 
 struct Snapshot {
@@ -120,17 +138,19 @@ struct Snapshot {
     files: HashMap<u64, ServedFile>,
 }
 
-fn file_digest(path: &Path, cancel: &AtomicBool) -> Result<String> {
+fn file_digest(path: &Path, cancel: &AtomicBool) -> Result<(String,String)> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
+    let mut native=blake3::Hasher::new();
     let mut bytes = [0u8; 64 * 1024];
     loop {
         if cancel.load(Ordering::Relaxed) { bail!("Operación cancelada"); }
         let count = file.read(&mut bytes)?;
         if count == 0 { break; }
         hasher.update(&bytes[..count]);
+        native.update(&bytes[..count]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok((format!("{:x}", hasher.finalize()),native.finalize().to_hex().to_string()))
 }
 fn approved_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 200 && name != "." && name != ".."
@@ -162,7 +182,8 @@ fn snapshot(db_path: &Path, choice: &ShareSelection, cancel: &AtomicBool)
     if choice.products.is_empty() || choice.products.len() > MAX_PRODUCTS {
         bail!("Selecciona entre 1 y 2000 fichas antes de compartir");
     }
-    let db = Catalog::open(db_path)?;
+    let mut db = Catalog::open(db_path)?;
+    let identity=db.shared_library_secret()?;
     let mut assets = Vec::new();
     let mut covers = HashMap::new();
     let mut files = HashMap::new();
@@ -177,6 +198,8 @@ fn snapshot(db_path: &Path, choice: &ShareSelection, cancel: &AtomicBool)
             bail!("Una ficha seleccionada supera los límites de metadatos publicados");
         }
         let id = assets.len() as u64 + 1;
+        let origin_key=blake3::keyed_hash(&identity,&local_id.to_le_bytes())
+            .to_hex().to_string();
         let cover = PathBuf::from(&asset.image_path);
         let has_cover = !asset.image_path.is_empty() && permitted_cover(&cover);
         if has_cover { covers.insert(id, cover); }
@@ -191,16 +214,19 @@ fn snapshot(db_path: &Path, choice: &ShareSelection, cancel: &AtomicBool)
                 .with_context(||format!("Adjunto no disponible: {}",file.original_name))?;
             total_size=total_size.checked_add(size).context("Tamaño total no válido")?;
             if total_size>MAX_TOTAL_BYTES { bail!("Máximo 16 GiB de adjuntos"); }
-            let digest=file_digest(&path,cancel)?;
+            let (digest,native)=file_digest(&path,cancel)?;
             let public_id=next_file_id;
             next_file_id+=1;
-            files.insert(public_id,ServedFile{path,size,sha256:digest.clone()});
+            files.insert(public_id,ServedFile{
+                path,size,sha256:digest.clone(),blake3:native.clone(),
+            });
             visible_files.push(RemoteFile{
                 id:public_id,name:file.original_name,size,sha256:digest,
+                blake3:native,
             });
         }
         assets.push(RemoteAsset {
-            id, title:asset.title,creator:asset.creator,category:asset.category,
+            id, origin_key,title:asset.title,creator:asset.creator,category:asset.category,
             tags:asset.tags,description:asset.description,avatars:db.avatars_for(local_id)?,
             booth_url:asset.booth_url,nsfw:asset.nsfw,has_cover,files:visible_files,
         });
@@ -565,8 +591,12 @@ pub fn browse(conn:&RemoteConnection,query:&str,category:&str,avatar:&str,
 }
 pub fn get_asset(conn:&RemoteConnection,id:u64)->Result<RemoteAsset>{
     let asset:RemoteAsset=limited_json(response(conn,&format!("/v1/assets/{id}"))?)?;
-    if asset.id!=id || asset.files.len()>MAX_FILES || !CATEGORIES.contains(&asset.category.as_str())
-        || asset.avatars.len()>64 || asset.title.len()>512 {
+    if asset.id!=id || asset.origin_key.len()!=64
+        || !asset.origin_key.bytes().all(|c|c.is_ascii_hexdigit())
+        || asset.files.len()>MAX_FILES || !CATEGORIES.contains(&asset.category.as_str())
+        || asset.avatars.len()>64 || asset.title.len()>512
+        || asset.files.iter().any(|f|f.blake3.len()!=64
+            || !f.blake3.bytes().all(|c|c.is_ascii_hexdigit())) {
         bail!("Ficha remota no válida");
     }
     Ok(asset)
