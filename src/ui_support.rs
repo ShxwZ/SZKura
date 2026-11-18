@@ -133,6 +133,40 @@ pub fn draw_icon(p:&Painter, r:Rect, symbol:Icon, color:Color32){
     }
 }
 
+/// Shared geometry for LOCAL and REMOTE catalog covers: letterbox the sharp
+/// image over the same rounded blurred backdrop. Never stretch or crop assets.
+pub fn fitted_cover_rect(frame:Rect,natural:Vec2)->Rect{
+    if natural.x<=0.0 || natural.y<=0.0{
+        return Rect::from_center_size(frame.center(),Vec2::ZERO);
+    }
+    let factor=(frame.width()/natural.x).min(frame.height()/natural.y)
+        .min(1.0).max(0.0);
+    Rect::from_center_size(frame.center(),natural*factor)
+}
+
+/// Exactly one cover painter in SZKura. Texture loading and decoding happen
+/// in their respective background workers; this only draws ready textures.
+pub fn paint_cover(ui:&mut Ui,foreground:Option<&egui::TextureHandle>,
+    backdrop:Option<&egui::TextureHandle>,width:f32,height:f32){
+    let (rect,_)=ui.allocate_exact_size(egui::vec2(width,height),Sense::hover());
+    ui.painter().rect_filled(rect,10.0,theme::colors().faint_bg);
+    if let Some(tex)=foreground {
+        if let Some(bg)=backdrop {
+            egui::Image::new((bg.id(),bg.size_vec2()))
+                .corner_radius(10)
+                .tint(Color32::from_rgb(210,210,210))
+                .paint_at(ui,rect);
+            ui.painter().rect_filled(rect,10.0,Color32::from_black_alpha(45));
+        }
+        let bounds=fitted_cover_rect(rect,tex.size_vec2());
+        egui::Image::new((tex.id(),tex.size_vec2()))
+            .corner_radius(4).paint_at(ui,bounds);
+    }else{
+        ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,
+            tr("Sin portada"),egui::FontId::proportional(13.0),theme::colors().muted);
+    }
+}
+
 pub fn icon(ui:&mut Ui,symbol:Icon,color:Color32,size:f32){
     let (rect,_) = ui.allocate_exact_size(Vec2::splat(size),Sense::hover());
     draw_icon(ui.painter(),rect,symbol,color);
