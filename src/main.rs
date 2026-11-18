@@ -2486,6 +2486,10 @@ impl eframe::App for BoothApp {
             &self.paths.db,&self.paths.library,&self.paths.covers);
         self.library_ui.render_consent(ctx,&self.paths.db,
             self.paths.db.parent().unwrap_or(Path::new(".")));
+        // The remote import button schedules a confirmation; without this
+        // shared modal the action would never start any downloads.
+        self.library_ui.render_import_confirm(ctx,&self.paths.db,
+            &self.paths.library,&self.paths.covers);
         if let Some(id)=self.sharing.take_navigation() {
             // Navigate through the existing product selector so the editor
             // loads the correct details, cover and attachment state.
