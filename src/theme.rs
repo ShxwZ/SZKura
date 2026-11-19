@@ -168,6 +168,15 @@ pub fn apply_widget_visuals(visuals:&mut eframe::egui::Visuals,p:Palette){
     w.open.fg_stroke.color=p.text;
 }
 
+/// The selector always displays four swatches in the same positions.
+/// Vice swaps the second color to its sunset highlight; that is a color-only
+/// change, not a different layout or a special widget for one palette.
+pub fn preview_colors(kind:ThemeKind)->[Color32;4]{
+    let p=swatches(kind);
+    let secondary=if kind==ThemeKind::Vice{rgb(149,80,57)}else{p.card};
+    [p.bg,secondary,p.primary,p.accent]
+}
+
 static ACTIVE:AtomicU8=AtomicU8::new(ThemeKind::Sage as u8);
 pub fn selected()->ThemeKind{
     match ACTIVE.load(Ordering::Relaxed){
@@ -226,6 +235,21 @@ mod tests {
         assert_eq!(ThemeKind::from_id("unknown"),None);
         assert_eq!(ThemeKind::from_id(""),None);
     }
+    #[test]
+    fn theme_selector_preview_has_same_four_swatches_for_every_theme(){
+        for kind in ThemeKind::ALL {
+            let p=swatches(kind);
+            let colors=preview_colors(kind);
+            assert_eq!(colors.len(),4);
+            assert_eq!(colors[0],p.bg);
+            assert_eq!(colors[2],p.primary);
+            assert_eq!(colors[3],p.accent);
+            assert_eq!(colors[1],if kind==ThemeKind::Vice{
+                rgb(149,80,57)
+            }else{p.card});
+        }
+    }
+
     #[test]
     fn native_buttons_and_dropdowns_follow_every_palette(){
         for kind in ThemeKind::ALL {

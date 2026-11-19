@@ -72,6 +72,16 @@ impl SettingsSection {
     }
 }
 
+/// The appearance page must have identical structure in all five palettes.
+/// Keep its margins, border width and corners fixed; vary only palette colors.
+fn appearance_settings_frame(p:theme::Palette)->egui::Frame{
+    egui::Frame::new()
+        .fill(p.panel)
+        .stroke(egui::Stroke::new(1.0,p.stroke))
+        .corner_radius(12)
+        .inner_margin(egui::Margin::symmetric(18,18))
+}
+
 struct JobResult { message:String, select_id:Option<i64> }
 struct JobFinished { message:String, select_id:Option<i64>, ok:bool }
 
@@ -82,6 +92,28 @@ struct AvatarScanFinished {
     generation: u64,
     source_paths: Vec<PathBuf>,
     report: avatar_detection::ScanResult,
+}
+
+#[cfg(test)]
+mod palette_layout_parity_tests {
+    use super::*;
+
+    #[test]
+    fn appearance_geometry_is_identical_across_all_five_themes(){
+        let reference=appearance_settings_frame(theme::swatches(ThemeKind::Sage));
+        for kind in ThemeKind::ALL {
+            let palette=theme::swatches(kind);
+            let frame=appearance_settings_frame(palette);
+            // No theme may add/remove padding, resize cards or change the
+            // framed content width when users switch appearances.
+            assert_eq!(frame.inner_margin,reference.inner_margin);
+            assert_eq!(frame.outer_margin,reference.outer_margin);
+            assert_eq!(frame.corner_radius,reference.corner_radius);
+            assert_eq!(frame.stroke.width,reference.stroke.width);
+            assert_eq!(frame.fill,palette.panel);
+            assert_eq!(frame.stroke.color,palette.stroke);
+        }
+    }
 }
 
 /// One LRU entry owns its foreground and optional 64px background textures.
@@ -2186,17 +2218,9 @@ impl BoothApp {
                 ).color(colors().muted).size(12.0));
                 }
                 if self.configured && self.settings_section==SettingsSection::Appearance {
-                // Keep the controls in one legible, opaque block on Vice.
-                // Other palettes retain their original unframed spacing.
-                let mut appearance_frame=egui::Frame::new();
-                if theme::selected()==ThemeKind::Vice {
-                    appearance_frame=appearance_frame
-                        .fill(colors().panel)
-                        .stroke(egui::Stroke::new(1.0,colors().stroke))
-                        .corner_radius(12)
-                        .inner_margin(egui::Margin::symmetric(18,18));
-                }
-                appearance_frame.show(ui,|ui|{
+                // Every palette uses EXACTLY the same visual hierarchy,
+                // padding and widget positions; only the frame colors vary.
+                appearance_settings_frame(colors()).show(ui,|ui|{
                 ui.add_space(8.0);
                 ui.label(RichText::new(tr("Paleta de colores")).strong().size(17.0));
                 ui.label(RichText::new(tr("Cambia la apariencia de toda la app. Tu elección se guarda para el siguiente inicio.")
@@ -2204,7 +2228,6 @@ impl BoothApp {
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui|{
                     for kind in ThemeKind::ALL {
-                        let preview=theme::swatches(kind);
                         let selected=self.ui_palette==kind;
                         let p=colors();
                         // Use one clickable tile per theme with an identical label
@@ -2223,14 +2246,9 @@ impl BoothApp {
                         let swatch_size=17.0;
                         let swatch_gap=8.0;
                         let row_width=4.0*swatch_size+3.0*swatch_gap;
-                        // The sunset orange should be visible in Vice's preview
-                        // even though its content cards remain dark for readability.
-                        let preview_colors=if kind==ThemeKind::Vice{
-                            [preview.bg,Color32::from_rgb(149,80,57),
-                                preview.primary,preview.accent]
-                        }else{
-                            [preview.bg,preview.card,preview.primary,preview.accent]
-                        };
+                        // Color differences belong in the palette module;
+                        // all themes use the same preview widget and layout.
+                        let preview_colors=theme::preview_colors(kind);
                         for (index,color) in preview_colors.into_iter().enumerate() {
                             let x=rect.center().x-row_width*0.5
                                 +index as f32*(swatch_size+swatch_gap);
