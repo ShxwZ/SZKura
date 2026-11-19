@@ -187,6 +187,22 @@ pub fn translate(language:Language,s:&str)->&str {
         "Creador / tienda"=>"Creator / shop",
         "Nombre de tienda"=>"Shop name",
         "Avatares compatibles"=>"Compatible avatars",
+        "Analizar archivos"=>"Scan files",
+        "Cancelar análisis"=>"Cancel scan",
+        "Análisis cancelado."=>"Scan canceled.",
+        "Cancelando análisis..."=>"Canceling scan...",
+        "No se pudo completar el análisis."=>"Could not complete the scan.",
+        "Han cambiado los archivos; vuelve a analizarlos."=>"The attached files changed; scan again.",
+        "Límite de 64 avatares por ficha"=>"Limit of 64 avatars per product",
+        "Error al leer avatares"=>"Could not read avatars",
+        "Error al leer archivos"=>"Could not read files",
+        "Busca avatares conocidos en nombres y rutas de archivos."=>"Find known avatars in file names and paths.",
+        "Analizando archivos..."=>"Scanning files...",
+        "No hay archivos para analizar."=>"No files to scan.",
+        "Primero añade algún avatar compatible a tu biblioteca."=>"Add a compatible avatar to your library first.",
+        "No se encontraron nuevos avatares compatibles."=>"No new compatible avatars were found.",
+        "Avatares añadidos"=>"Avatars added",
+        "Advertencias de análisis"=>"Scan warnings",
         "Se guardan en MAYÚSCULAS y sin nombres repetidos. Sepáralos con comas."=>"Names are saved in UPPERCASE without duplicates. Separate them with commas.",
         "Otras etiquetas"=>"Other tags",
         "Color, estilo, temática..."=>"Color, style, theme...",
@@ -536,6 +552,26 @@ mod tests{
             "Could not open link: This link requires a valid SZKura transfer key"
         );
     }
+    #[test]
+    fn avatar_scan_controls_are_translated_in_both_languages() {
+        for (es,en) in [
+            ("Analizar archivos","Scan files"),
+            ("Cancelar análisis","Cancel scan"),
+            ("Analizando archivos...","Scanning files..."),
+            ("Análisis cancelado.","Scan canceled."),
+            ("Cancelando análisis...","Canceling scan..."),
+            ("No se pudo completar el análisis.","Could not complete the scan."),
+            ("Avatares añadidos","Avatars added"),
+            ("Advertencias de análisis","Scan warnings"),
+            ("No hay archivos para analizar.","No files to scan."),
+            ("Han cambiado los archivos; vuelve a analizarlos.","The attached files changed; scan again."),
+            ("Límite de 64 avatares por ficha","Limit of 64 avatars per product"),
+        ] {
+            assert_eq!(translate(Language::Spanish,es),es);
+            assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
     #[test]
     fn unity_package_path_preview_is_translated() {
         for (es, en) in [
