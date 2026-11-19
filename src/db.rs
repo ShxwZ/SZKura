@@ -258,11 +258,11 @@ impl Catalog {
         ).optional()?;
         Ok(match value.as_deref(){
             Some("graphite")=>"graphite",Some("purple")=>"purple",
-            Some("orange")=>"orange",_=>"sage"
+            Some("orange")=>"orange",Some("vice")=>"vice",_=>"sage"
         }.to_owned())
     }
     pub fn set_palette_id(&mut self,id:&str)->Result<()> {
-        if !matches!(id,"graphite"|"sage"|"purple"|"orange"){
+        if !matches!(id,"graphite"|"sage"|"purple"|"orange"|"vice"){
             bail!("Paleta desconocida");
         }
         self.conn.execute(
@@ -1096,15 +1096,15 @@ mod tests {
         let (dir,mut db)=test_db();
         let asset=db.create_product("Original","Ropa").unwrap();
         assert_eq!(db.palette_id().unwrap(),"sage");
-        for id in ["graphite","purple","orange","sage"] {
+        for id in ["graphite","purple","orange","sage","vice"] {
             db.set_palette_id(id).unwrap();
             assert_eq!(db.palette_id().unwrap(),id);
         }
         assert!(db.set_palette_id("invalid").is_err());
-        db.set_palette_id("purple").unwrap();
+        db.set_palette_id("vice").unwrap();
         drop(db);
         let db=Catalog::open(&dir.path().join("catalog.sqlite")).unwrap();
-        assert_eq!(db.palette_id().unwrap(),"purple");
+        assert_eq!(db.palette_id().unwrap(),"vice");
         assert_eq!(db.get(asset).unwrap().unwrap().title,"Original");
     }
 
