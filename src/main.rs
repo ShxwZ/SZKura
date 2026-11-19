@@ -1023,7 +1023,7 @@ impl BoothApp {
     fn header(&mut self,ctx:&egui::Context) {
         let busy=self.receiver.is_some() || self.update_install_rx.is_some();
         egui::TopBottomPanel::top("header")
-            .frame(egui::Frame::new().fill(colors().panel).inner_margin(egui::Margin::symmetric(22,11)))
+            .frame(egui::Frame::new().fill(theme::chrome_panel_fill()).inner_margin(egui::Margin::symmetric(22,11)))
             .show(ctx,|ui|{
                 ui.horizontal(|ui|{
                     icon(ui,Icon::Grid,colors().accent,23.0);
@@ -1093,7 +1093,7 @@ impl BoothApp {
     }
     fn sidebar(&mut self,ctx:&egui::Context) {
         egui::SidePanel::left("sidebar").resizable(false).exact_width(218.0)
-            .frame(egui::Frame::new().fill(colors().panel).inner_margin(egui::Margin::symmetric(14,18)))
+            .frame(egui::Frame::new().fill(theme::chrome_panel_fill()).inner_margin(egui::Margin::symmetric(14,18)))
             .show(ctx,|ui|{
                 egui::ScrollArea::vertical().id_salt("nav-scroll")
                     .auto_shrink([false,false]).show(ui,|ui|{
@@ -1288,9 +1288,8 @@ impl BoothApp {
         let mut inspect_unity:Option<(PathBuf,Option<UnityPackage>)>=None;
         let mut export_labeled:Option<(PathBuf,Option<UnityPackage>)>=None;
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(24,18)))
+            .frame(egui::Frame::new().fill(theme::content_panel_fill()).inner_margin(egui::Margin::symmetric(24,18)))
             .show(ctx,|ui|{
-                theme::paint_vice_background(ui);
                 let compact_header=ui.available_width()<800.0;
                 ui.horizontal(|ui|{
                     back=action(ui,Icon::Back,"Biblioteca",false);
@@ -1862,9 +1861,8 @@ impl BoothApp {
     }
 
     fn catalog(&mut self,ctx:&egui::Context) {
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(19,17)))
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::content_panel_fill()).inner_margin(egui::Margin::symmetric(19,17)))
             .show(ctx,|ui|{
-                theme::paint_vice_background(ui);
                 ui.horizontal(|ui|{
                     ui.label(RichText::new(tr(if self.category.is_empty(){"Tu biblioteca"}else{&self.category}))
                         .strong().size(23.0).color(colors().text));
@@ -1964,9 +1962,8 @@ impl BoothApp {
         let indexes=self.library_ui.picker_indices();
         let count=indexes.len();
         egui::CentralPanel::default().frame(egui::Frame::new()
-            .fill(colors().bg).inner_margin(egui::Margin::symmetric(19,17)))
+            .fill(theme::content_panel_fill()).inner_margin(egui::Margin::symmetric(19,17)))
             .show(ctx,|ui|{
-                theme::paint_vice_background(ui);
                 ui.horizontal_wrapped(|ui|{
                     if action(ui,Icon::Back,"Volver a configuración",false){
                         self.library_ui.picker_open=false;
@@ -2128,9 +2125,8 @@ impl BoothApp {
         let mut requested_language=None;
         let busy=self.receiver.is_some() || self.update_install_rx.is_some();
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(28,24)))
+            .frame(egui::Frame::new().fill(theme::content_panel_fill()).inner_margin(egui::Margin::symmetric(28,24)))
             .show(ctx,|ui|{
-                theme::paint_vice_background(ui);
                 ui.horizontal(|ui|{
                     if self.configured {
                         back=action(ui,Icon::Back,"Volver a biblioteca",true);
@@ -2524,9 +2520,8 @@ impl BoothApp {
         let busy=self.receiver.is_some();
         let(mut back,mut submit,mut choose_cover)=(false,false,false);
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(24,18)))
+            .frame(egui::Frame::new().fill(theme::content_panel_fill()).inner_margin(egui::Margin::symmetric(24,18)))
             .show(ctx,|ui|{
-                theme::paint_vice_background(ui);
                 let compact_header=ui.available_width()<700.0;
                 ui.horizontal(|ui|{
                     back=action(ui,Icon::Back,"Biblioteca",false);
@@ -2647,6 +2642,9 @@ impl BoothApp {
 
 impl eframe::App for BoothApp {
     fn update(&mut self,ctx:&egui::Context,_frame:&mut eframe::Frame) {
+        // Paint once behind all root panels in the same window coordinates.
+        // Vice alone uses translucent chrome / transparent content frames.
+        theme::paint_vice_background(ctx);
         self.poll_updates(ctx);
         self.process_finished(ctx);
         self.library_ui.set_product_share_busy(self.sharing.product_share_busy());
@@ -2690,7 +2688,7 @@ impl eframe::App for BoothApp {
             if let Err(e)=self.reload(){self.status=format!("Error de filtros: {e}");}
         }
         egui::TopBottomPanel::bottom("status")
-            .frame(egui::Frame::new().fill(colors().panel).inner_margin(egui::Margin::symmetric(18,8)))
+            .frame(egui::Frame::new().fill(theme::chrome_panel_fill()).inner_margin(egui::Margin::symmetric(18,8)))
             .show(ctx,|ui|{
                 let color=if self.status.starts_with("Error")||self.status.starts_with("No se"){
                     Color32::from_rgb(242,157,145)

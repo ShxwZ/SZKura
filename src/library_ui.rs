@@ -1418,10 +1418,9 @@ impl LibraryUi {
         storage:&Path,covers:&Path){
         self.local_db_path=Some(db_path.to_path_buf());
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(colors().bg)
+            .frame(egui::Frame::new().fill(crate::theme::content_panel_fill())
                 .inner_margin(egui::Margin::symmetric(19,17)))
             .show(ctx,|ui|{
-            crate::theme::paint_vice_background(ui);
             if let Some(info)=self.connection.as_ref().map(|connection|connection.info.clone()){
                 egui::Frame::new().fill(colors().panel)
                     .stroke(egui::Stroke::new(1.0,colors().accent))

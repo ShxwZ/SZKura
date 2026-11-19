@@ -104,11 +104,28 @@ fn vice_gradient_colors()->[Color32;4]{
     [rgb(26,12,45),rgb(38,15,51),rgb(72,37,38),rgb(40,16,45)]
 }
 
-/// Paint a lightweight, static violet-to-orange sunset in central panels.
-/// This never runs for the four existing themes.
-pub fn paint_vice_background(ui:&eframe::egui::Ui){
+/// Root panels must not paint opaque rectangles over the full-window
+/// background. All existing palettes keep their original solid fills.
+fn content_fill_for(kind:ThemeKind)->Color32{
+    if kind==ThemeKind::Vice{Color32::TRANSPARENT}else{swatches(kind).bg}
+}
+pub fn content_panel_fill()->Color32{content_fill_for(selected())}
+
+/// Slightly tinted chrome preserves navigation contrast, but the same global
+/// Vice sunset remains visible underneath the header, sidebar and status bar.
+fn chrome_fill_for(kind:ThemeKind)->Color32{
+    if kind==ThemeKind::Vice{
+        Color32::from_rgba_unmultiplied(23,11,42,166)
+    }else{swatches(kind).panel}
+}
+pub fn chrome_panel_fill()->Color32{chrome_fill_for(selected())}
+
+/// Paint ONE static gradient in window coordinates, before any egui panels.
+/// Previously each CentralPanel drew its own gradient in local coordinates,
+/// causing a hard rectangular edge where it met the header or sidebar.
+pub fn paint_vice_background(ctx:&eframe::egui::Context){
     if selected()!=ThemeKind::Vice{return;}
-    let rect=ui.max_rect();
+    let rect=ctx.content_rect();
     if rect.width()<=0.0 || rect.height()<=0.0{return;}
     let [top_left,top_right,bottom_right,bottom_left]=vice_gradient_colors();
     let mut mesh=eframe::egui::Mesh::default();
@@ -118,7 +135,8 @@ pub fn paint_vice_background(ui:&eframe::egui::Ui){
     mesh.colored_vertex(rect.left_bottom(),bottom_left);
     mesh.add_triangle(0,1,2);
     mesh.add_triangle(0,2,3);
-    ui.painter().add(eframe::egui::Shape::mesh(mesh));
+    ctx.layer_painter(eframe::egui::LayerId::background())
+        .add(eframe::egui::Shape::mesh(mesh));
 }
 
 static ACTIVE:AtomicU8=AtomicU8::new(ThemeKind::Sage as u8);
@@ -161,6 +179,14 @@ mod tests {
         assert!(sunset[2].r()>sunset[2].b(), "Vice ends warm");
         assert!(swatches(ThemeKind::Vice).accent.r()>swatches(ThemeKind::Vice).accent.b());
         // The sunset is secondary; cards stay more distinct from the panel.
+        assert_eq!(content_fill_for(ThemeKind::Vice),Color32::TRANSPARENT);
+        assert!(chrome_fill_for(ThemeKind::Vice).a()>0);
+        assert!(chrome_fill_for(ThemeKind::Vice).a()<255);
+        for kind in [ThemeKind::Graphite,ThemeKind::Sage,
+            ThemeKind::Purple,ThemeKind::Orange] {
+            assert_eq!(content_fill_for(kind),swatches(kind).bg);
+            assert_eq!(chrome_fill_for(kind),swatches(kind).panel);
+        }
         let vice=swatches(ThemeKind::Vice);
         assert!(vice.card.r()>vice.panel.r());
         assert!(vice.card.g()>vice.panel.g());
