@@ -139,6 +139,35 @@ pub fn paint_vice_background(ctx:&eframe::egui::Context){
         .add(eframe::egui::Shape::mesh(mesh));
 }
 
+/// Apply the active palette to ALL egui widget surfaces.
+/// Buttons and ComboBoxes use `weak_bg_fill` (not only `bg_fill`);
+/// expanded ComboBoxes use the separate `open` widget state.
+pub fn apply_widget_visuals(visuals:&mut eframe::egui::Visuals,p:Palette){
+    let w=&mut visuals.widgets;
+    let stroke=|color|eframe::egui::Stroke::new(1.0,color);
+    // egui dims disabled widgets separately; retain a muted opaque surface.
+    w.noninteractive.bg_fill=p.panel;
+    w.noninteractive.weak_bg_fill=p.panel;
+    w.noninteractive.bg_stroke=stroke(p.stroke);
+    w.noninteractive.fg_stroke.color=p.text;
+    w.inactive.bg_fill=p.button_bg;
+    w.inactive.weak_bg_fill=p.button_bg;
+    w.inactive.bg_stroke=stroke(p.stroke);
+    w.inactive.fg_stroke.color=p.text;
+    w.hovered.bg_fill=p.hover_bg;
+    w.hovered.weak_bg_fill=p.hover_bg;
+    w.hovered.bg_stroke=stroke(p.accent);
+    w.hovered.fg_stroke.color=p.text;
+    w.active.bg_fill=p.primary;
+    w.active.weak_bg_fill=p.primary;
+    w.active.bg_stroke=stroke(p.primary_border);
+    w.active.fg_stroke.color=p.text;
+    w.open.bg_fill=p.hover_bg;
+    w.open.weak_bg_fill=p.hover_bg;
+    w.open.bg_stroke=stroke(p.accent);
+    w.open.fg_stroke.color=p.text;
+}
+
 static ACTIVE:AtomicU8=AtomicU8::new(ThemeKind::Sage as u8);
 pub fn selected()->ThemeKind{
     match ACTIVE.load(Ordering::Relaxed){
@@ -196,5 +225,26 @@ mod tests {
         assert!(sunset[2].r()<vice.accent.r()/2);
         assert_eq!(ThemeKind::from_id("unknown"),None);
         assert_eq!(ThemeKind::from_id(""),None);
+    }
+    #[test]
+    fn native_buttons_and_dropdowns_follow_every_palette(){
+        for kind in ThemeKind::ALL {
+            let p=swatches(kind);
+            let mut visuals=eframe::egui::Visuals::dark();
+            apply_widget_visuals(&mut visuals,p);
+            let w=&visuals.widgets;
+            assert_eq!(w.noninteractive.bg_fill,p.panel);
+            assert_eq!(w.inactive.bg_fill,p.button_bg);
+            assert_eq!(w.inactive.weak_bg_fill,p.button_bg);
+            assert_eq!(w.hovered.weak_bg_fill,p.hover_bg);
+            assert_eq!(w.active.weak_bg_fill,p.primary);
+            assert_eq!(w.open.bg_fill,p.hover_bg);
+            assert_eq!(w.open.weak_bg_fill,p.hover_bg);
+            assert_eq!(w.inactive.bg_stroke.color,p.stroke);
+            assert_eq!(w.hovered.bg_stroke.color,p.accent);
+            assert_eq!(w.active.bg_stroke.color,p.primary_border);
+            assert_eq!(w.open.bg_stroke.color,p.accent);
+            assert_eq!(w.open.fg_stroke.color,p.text);
+        }
     }
 }

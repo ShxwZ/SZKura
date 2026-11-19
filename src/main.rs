@@ -168,19 +168,14 @@ impl BoothApp {
         style.visuals=egui::Visuals::dark();
         style.visuals.panel_fill=p.bg;
         style.visuals.window_fill=p.panel;
-        style.visuals.widgets.inactive.bg_fill=p.button_bg;
-        style.visuals.widgets.hovered.bg_fill=p.hover_bg;
-        style.visuals.widgets.active.bg_fill=p.primary;
+        // Centralize ALL native egui controls (including the weak backgrounds
+        // used by ordinary buttons, combo boxes and the open-popup state).
+        theme::apply_widget_visuals(&mut style.visuals,p);
         style.visuals.selection.bg_fill=p.selection;
+        style.visuals.selection.stroke.color=p.text;
         style.visuals.extreme_bg_color=p.extreme_bg;
         style.visuals.faint_bg_color=p.faint_bg;
-        style.visuals.widgets.inactive.fg_stroke.color=p.text;
-        style.visuals.widgets.hovered.fg_stroke.color=p.text;
-        style.visuals.widgets.active.fg_stroke.color=p.text;
-        style.visuals.widgets.inactive.bg_stroke=egui::Stroke::new(1.0,p.stroke);
-        style.visuals.widgets.hovered.bg_stroke=egui::Stroke::new(1.0,p.accent);
         style.visuals.window_stroke=egui::Stroke::new(1.0,p.stroke);
-        style.visuals.widgets.noninteractive.fg_stroke.color=p.text;
         style.text_styles.insert(egui::TextStyle::Body,egui::FontId::proportional(16.0));
         style.text_styles.insert(egui::TextStyle::Button,egui::FontId::proportional(15.0));
         style.text_styles.insert(egui::TextStyle::Heading,egui::FontId::proportional(23.0));
