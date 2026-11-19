@@ -588,20 +588,6 @@ impl Catalog {
         Ok(normalized)
     }
 
-    /// All known labels for on-demand file analysis. The filter's separate
-    /// 512-label UI cap must not hide valid compatibility candidates.
-    pub fn avatar_names_for_scan(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT avatar_name FROM asset_avatars ORDER BY avatar_name COLLATE NOCASE"
-        )?;
-        let rows = stmt.query_map([], |row| row.get::<_,String>(0))?;
-        let mut names:Vec<String> = rows.collect::<rusqlite::Result<Vec<String>>>()?
-            .into_iter().flat_map(|name| Self::normalize_avatar_names(&name)).collect();
-        names.sort();
-        names.dedup();
-        Ok(names)
-    }
-
     /// Existing names populate the filter; no hard-coded avatar list.
     pub fn avatar_options(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
@@ -1355,22 +1341,6 @@ mod tests {
         db.set_cover(id, "/manual-cover.png").unwrap();
         assert_eq!(db.get(id).unwrap().unwrap().image_path, "/manual-cover.png");
     }
-
-    #[test]
-    fn avatar_scan_uses_all_known_names_without_filter_limit() {
-        let (_tmp,mut db)=test_db();
-        for batch in 0..11 {
-            let id=db.create_product(&format!("Product {batch}"),"Otros").unwrap();
-            let names=(0..50).map(|i|format!("AVATAR_{:04}",batch*50+i))
-                .collect::<Vec<_>>().join(", ");
-            db.set_avatars(id,&names).unwrap();
-        }
-        assert_eq!(db.avatar_options().unwrap().len(),512);
-        let scan_names=db.avatar_names_for_scan().unwrap();
-        assert_eq!(scan_names.len(),550);
-        assert!(scan_names.contains(&"AVATAR_0549".to_owned()));
-    }
-
 
     #[test]
     fn remote_import_preserves_versions_and_uses_stable_origin() {

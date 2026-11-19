@@ -2,16 +2,16 @@ name: Build, test and publish
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Serialize main releases to avoid duplicate tags. PR builds can cancel
-# obsolete commits without cancelling a release of main.
+# Serialize main releases; cancel superseded PR runs so only the latest
+# reviewed commit consumes Windows/Linux build resources.
 concurrency:
   group: szkura-build-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

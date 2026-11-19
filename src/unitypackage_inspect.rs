@@ -19,15 +19,6 @@ pub struct UnityPathsPreview {
 }
 
 pub fn inspect_unitypackage_paths(path: &Path) -> Result<UnityPathsPreview> {
-    inspect_unitypackage_paths_with(path, |_| true)
-}
-
-/// Visit each validated Unity asset pathname without retaining potentially
-/// thousands of lengthy paths. Returning false stops decompression early (for
-/// cancellation or when all relevant avatar labels have been found).
-pub fn inspect_unitypackage_paths_with(
-    path: &Path, mut on_path: impl FnMut(&str) -> bool,
-) -> Result<UnityPathsPreview> {
     let file = File::open(path)
         .with_context(|| format!("No se pudo abrir el UnityPackage: {}", path.display()))?;
     let metadata = file.metadata()?;
@@ -37,16 +28,10 @@ pub fn inspect_unitypackage_paths_with(
     if metadata.len() > crate::package_inspect::MAX_PACKAGE_BYTES {
         bail!("El UnityPackage supera el límite de inspección de 2 GiB");
     }
-    inspect_reader_with(BufReader::new(file), &mut on_path)
+    inspect_reader(BufReader::new(file))
 }
 
 fn inspect_reader(source: impl Read) -> Result<UnityPathsPreview> {
-    inspect_reader_with(source, |_| true)
-}
-
-fn inspect_reader_with(
-    source: impl Read, mut on_path: impl FnMut(&str) -> bool,
-) -> Result<UnityPathsPreview> {
     // The cap applies to the entire decompressed stream, including TAR headers
     // and asset payloads skipped by the iterator. No files are written to disk.
     let gzip = GzDecoder::new(source);
@@ -87,9 +72,6 @@ fn inspect_reader_with(
             folders.insert(folder);
             if folders.len() > MAX_FOLDERS {
                 bail!("El UnityPackage contiene demasiadas carpetas distintas");
-            }
-            if !on_path(raw.trim_end_matches(['\0', '\r', '\n'])) {
-                break;
             }
         } else {
             skipped_paths += 1;

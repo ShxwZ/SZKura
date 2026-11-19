@@ -9,7 +9,6 @@ pub mod updater;
 
 pub mod package_inspect;
 pub mod unitypackage_inspect;
-pub mod avatar_detection;
 pub mod unitypackage_labels;
 
 pub mod quick_import;
