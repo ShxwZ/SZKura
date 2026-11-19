@@ -1290,6 +1290,7 @@ impl BoothApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(24,18)))
             .show(ctx,|ui|{
+                theme::paint_vice_background(ui);
                 let compact_header=ui.available_width()<800.0;
                 ui.horizontal(|ui|{
                     back=action(ui,Icon::Back,"Biblioteca",false);
@@ -1863,6 +1864,7 @@ impl BoothApp {
     fn catalog(&mut self,ctx:&egui::Context) {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(19,17)))
             .show(ctx,|ui|{
+                theme::paint_vice_background(ui);
                 ui.horizontal(|ui|{
                     ui.label(RichText::new(tr(if self.category.is_empty(){"Tu biblioteca"}else{&self.category}))
                         .strong().size(23.0).color(colors().text));
@@ -1964,6 +1966,7 @@ impl BoothApp {
         egui::CentralPanel::default().frame(egui::Frame::new()
             .fill(colors().bg).inner_margin(egui::Margin::symmetric(19,17)))
             .show(ctx,|ui|{
+                theme::paint_vice_background(ui);
                 ui.horizontal_wrapped(|ui|{
                     if action(ui,Icon::Back,"Volver a configuración",false){
                         self.library_ui.picker_open=false;
@@ -2127,6 +2130,7 @@ impl BoothApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(28,24)))
             .show(ctx,|ui|{
+                theme::paint_vice_background(ui);
                 ui.horizontal(|ui|{
                     if self.configured {
                         back=action(ui,Icon::Back,"Volver a biblioteca",true);
@@ -2217,8 +2221,15 @@ impl BoothApp {
                         let swatch_size=17.0;
                         let swatch_gap=8.0;
                         let row_width=4.0*swatch_size+3.0*swatch_gap;
-                        for (index,color) in [preview.bg,preview.card,
-                            preview.primary,preview.accent].into_iter().enumerate() {
+                        // The sunset orange should be visible in Vice's preview
+                        // even though its content cards remain dark for readability.
+                        let preview_colors=if kind==ThemeKind::Vice{
+                            [preview.bg,Color32::from_rgb(115,59,23),
+                                preview.primary,preview.accent]
+                        }else{
+                            [preview.bg,preview.card,preview.primary,preview.accent]
+                        };
+                        for (index,color) in preview_colors.into_iter().enumerate() {
                             let x=rect.center().x-row_width*0.5
                                 +index as f32*(swatch_size+swatch_gap);
                             ui.painter().rect_filled(
@@ -2503,6 +2514,7 @@ impl BoothApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(24,18)))
             .show(ctx,|ui|{
+                theme::paint_vice_background(ui);
                 let compact_header=ui.available_width()<700.0;
                 ui.horizontal(|ui|{
                     back=action(ui,Icon::Back,"Biblioteca",false);

@@ -1421,6 +1421,7 @@ impl LibraryUi {
             .frame(egui::Frame::new().fill(colors().bg)
                 .inner_margin(egui::Margin::symmetric(19,17)))
             .show(ctx,|ui|{
+            crate::theme::paint_vice_background(ui);
             if let Some(info)=self.connection.as_ref().map(|connection|connection.info.clone()){
                 egui::Frame::new().fill(colors().panel)
                     .stroke(egui::Stroke::new(1.0,colors().accent))

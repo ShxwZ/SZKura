@@ -143,6 +143,7 @@ pub fn translate(language:Language,s:&str)->&str {
         "Jade"=>"Jade",
         "Amatista"=>"Amethyst",
         "Ámbar"=>"Amber",
+        "Vice"=>"Vice",
         "Copia de seguridad de la biblioteca"=>"Library backup",
         "Exporta o importa SQLite y las portadas locales. Los archivos originales no se incluyen: se conservan como archivos externos en sus carpetas."=>"Export or import SQLite and local covers. Original archives are excluded and remain in their folders.",
         "Exportar biblioteca (.szkura)"=>"Export library (.szkura)",

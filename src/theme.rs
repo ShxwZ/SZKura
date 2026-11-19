@@ -5,20 +5,22 @@ use std::sync::atomic::{AtomicU8,Ordering};
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 #[repr(u8)]
-pub enum ThemeKind { Graphite=0, Sage=1, Purple=2, Orange=3 }
+pub enum ThemeKind { Graphite=0, Sage=1, Purple=2, Orange=3, Vice=4 }
 
 impl ThemeKind {
-    pub const ALL:[Self;4]=[Self::Graphite,Self::Sage,Self::Purple,Self::Orange];
+    pub const ALL:[Self;5]=[Self::Graphite,Self::Sage,Self::Purple,Self::Orange,Self::Vice];
     pub fn id(self)->&'static str {
         match self {
             Self::Graphite=>"graphite",Self::Sage=>"sage",
-            Self::Purple=>"purple",Self::Orange=>"orange"
+            Self::Purple=>"purple",Self::Orange=>"orange",
+            Self::Vice=>"vice"
         }
     }
     pub fn label(self)->&'static str {
         match self {
             Self::Graphite=>"Ónix",Self::Sage=>"Jade",
-            Self::Purple=>"Amatista",Self::Orange=>"Ámbar"
+            Self::Purple=>"Amatista",Self::Orange=>"Ámbar",
+            Self::Vice=>"Vice"
         }
     }
     pub fn from_id(id:&str)->Option<Self>{
@@ -71,6 +73,18 @@ pub fn swatches(kind:ThemeKind)->Palette {
             selection:rgb(113,73,154),extreme_bg:rgb(25,20,34),
             faint_bg:rgb(43,33,56),
         },
+        ThemeKind::Vice=>Palette {
+            // Screenshot-inspired: indigo navigation, pink neon accents
+            // and a dark violet-to-amber sunset behind the main content.
+            bg:rgb(44,12,73),panel:rgb(47,13,80),card:rgb(69,27,77),
+            stroke:rgb(124,60,112),text:rgb(252,240,248),muted:rgb(212,179,211),
+            accent:rgb(255,151,200),primary:rgb(155,47,109),
+            button_bg:rgb(75,29,84),hover_bg:rgb(111,42,96),
+            nav_bg:rgb(49,15,88),nav_selected:rgb(104,38,113),
+            nav_border:rgb(239,117,184),primary_border:rgb(247,112,177),
+            selection:rgb(141,54,120),extreme_bg:rgb(47,14,77),
+            faint_bg:rgb(82,34,85),
+        },
         ThemeKind::Orange=>Palette {
             bg:rgb(25,20,17),panel:rgb(35,27,23),card:rgb(46,36,29),
             stroke:rgb(87,67,53),text:rgb(245,237,227),muted:rgb(195,177,161),
@@ -84,11 +98,35 @@ pub fn swatches(kind:ThemeKind)->Palette {
     }
 }
 
+/// Dark Vice sunset corner colors: upper-left, upper-right,
+/// lower-right and lower-left. Keep the gradient behind opaque cards.
+fn vice_gradient_colors()->[Color32;4]{
+    [rgb(45,12,89),rgb(83,23,70),rgb(115,59,23),rgb(91,29,76)]
+}
+
+/// Paint a lightweight, static violet-to-orange sunset in central panels.
+/// This never runs for the four existing themes.
+pub fn paint_vice_background(ui:&eframe::egui::Ui){
+    if selected()!=ThemeKind::Vice{return;}
+    let rect=ui.max_rect();
+    if rect.width()<=0.0 || rect.height()<=0.0{return;}
+    let [top_left,top_right,bottom_right,bottom_left]=vice_gradient_colors();
+    let mut mesh=eframe::egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(),top_left);
+    mesh.colored_vertex(rect.right_top(),top_right);
+    mesh.colored_vertex(rect.right_bottom(),bottom_right);
+    mesh.colored_vertex(rect.left_bottom(),bottom_left);
+    mesh.add_triangle(0,1,2);
+    mesh.add_triangle(0,2,3);
+    ui.painter().add(eframe::egui::Shape::mesh(mesh));
+}
+
 static ACTIVE:AtomicU8=AtomicU8::new(ThemeKind::Sage as u8);
 pub fn selected()->ThemeKind{
     match ACTIVE.load(Ordering::Relaxed){
         0=>ThemeKind::Graphite,2=>ThemeKind::Purple,
-        3=>ThemeKind::Orange,_=>ThemeKind::Sage,
+        3=>ThemeKind::Orange,4=>ThemeKind::Vice,
+        _=>ThemeKind::Sage,
     }
 }
 pub fn select(kind:ThemeKind){ACTIVE.store(kind as u8,Ordering::Relaxed);}
@@ -114,9 +152,14 @@ mod tests {
         assert_eq!(ThemeKind::Sage.id(),"sage");
         assert_eq!(ThemeKind::Purple.id(),"purple");
         assert_eq!(ThemeKind::Orange.id(),"orange");
+        assert_eq!(ThemeKind::Vice.id(),"vice");
         let labels=ThemeKind::ALL.map(ThemeKind::label);
-        assert_eq!(labels,["Ónix","Jade","Amatista","Ámbar"]);
-        assert_eq!(labels.iter().copied().collect::<std::collections::HashSet<_>>().len(),4);
+        assert_eq!(labels,["Ónix","Jade","Amatista","Ámbar","Vice"]);
+        assert_eq!(labels.iter().copied().collect::<std::collections::HashSet<_>>().len(),5);
+        let sunset=vice_gradient_colors();
+        assert!(sunset[0].b()>sunset[0].r(), "Vice starts purple");
+        assert!(sunset[2].r()>sunset[2].b(), "Vice ends warm");
+        assert!(swatches(ThemeKind::Vice).accent.r()>swatches(ThemeKind::Vice).accent.b());
         assert_eq!(ThemeKind::from_id("unknown"),None);
         assert_eq!(ThemeKind::from_id(""),None);
     }

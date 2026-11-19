@@ -276,7 +276,7 @@ fn sensitive_choice_positions(rect:Rect,text_height:f32)->(Pos2,Pos2){
 pub fn nav_sensitive_choice(ui:&mut Ui,label:&str,selected:bool)->bool{
     let label=tr(label);
     let p=theme::colors();
-    let text_color=if selected{Color32::from_rgb(246,227,250)}else{p.muted};
+    let text_color=if selected{p.text}else{p.muted};
     let galley=ui.painter().layout_no_wrap(
         label.to_owned(),egui::FontId::proportional(13.0),text_color);
     // Preserve the real button label for accessibility; paint its visible
@@ -285,16 +285,16 @@ pub fn nav_sensitive_choice(ui:&mut Ui,label:&str,selected:bool)->bool{
             .size(13.0).color(Color32::TRANSPARENT))
         .min_size(Vec2::new(184.0,ACTION_HEIGHT))
         .corner_radius(8.0)
-        .fill(if selected{Color32::from_rgb(89,58,100)}else{p.nav_bg})
+        .fill(if selected{p.nav_selected}else{p.nav_bg})
         .stroke(Stroke::new(1.0,if selected {
-            Color32::from_rgb(154,113,177)
+            p.nav_border
         }else{p.nav_bg}));
     let response=ui.add(button).on_hover_text(
         tr("Alternar visibilidad de las fichas marcadas como NSFW. Se ocultan por defecto.")
     );
     let (circle,text_pos)=sensitive_choice_positions(response.rect,galley.size().y);
     if selected {
-        ui.painter().circle_filled(circle,5.5,Color32::from_rgb(246,227,250));
+        ui.painter().circle_filled(circle,5.5,p.text);
     }else{
         ui.painter().circle_stroke(circle,5.5,Stroke::new(1.5,p.muted));
     }
