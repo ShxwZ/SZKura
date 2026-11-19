@@ -74,16 +74,16 @@ pub fn swatches(kind:ThemeKind)->Palette {
             faint_bg:rgb(43,33,56),
         },
         ThemeKind::Vice=>Palette {
-            // Screenshot-inspired: indigo navigation, pink neon accents
-            // and a dark violet-to-amber sunset behind the main content.
-            bg:rgb(44,12,73),panel:rgb(47,13,80),card:rgb(69,27,77),
-            stroke:rgb(124,60,112),text:rgb(252,240,248),muted:rgb(212,179,211),
-            accent:rgb(255,151,200),primary:rgb(155,47,109),
-            button_bg:rgb(75,29,84),hover_bg:rgb(111,42,96),
-            nav_bg:rgb(49,15,88),nav_selected:rgb(104,38,113),
-            nav_border:rgb(239,117,184),primary_border:rgb(247,112,177),
-            selection:rgb(141,54,120),extreme_bg:rgb(47,14,77),
-            faint_bg:rgb(82,34,85),
+            // Midnight violet panels and opaque, distinct cards. The sunset
+            // belongs to the background, not to interactive surfaces.
+            bg:rgb(23,11,41),panel:rgb(31,13,50),card:rgb(52,24,67),
+            stroke:rgb(105,57,100),text:rgb(248,238,250),muted:rgb(197,171,195),
+            accent:rgb(243,126,181),primary:rgb(159,48,105),
+            button_bg:rgb(49,24,64),hover_bg:rgb(78,35,79),
+            nav_bg:rgb(34,14,58),nav_selected:rgb(88,34,84),
+            nav_border:rgb(229,105,162),primary_border:rgb(234,113,164),
+            selection:rgb(126,47,102),extreme_bg:rgb(24,11,42),
+            faint_bg:rgb(43,24,53),
         },
         ThemeKind::Orange=>Palette {
             bg:rgb(25,20,17),panel:rgb(35,27,23),card:rgb(46,36,29),
@@ -98,10 +98,10 @@ pub fn swatches(kind:ThemeKind)->Palette {
     }
 }
 
-/// Dark Vice sunset corner colors: upper-left, upper-right,
-/// lower-right and lower-left. Keep the gradient behind opaque cards.
+/// Subdued sunset (top-left, top-right, bottom-right, bottom-left).
+/// It should read as atmosphere rather than a bright orange surface.
 fn vice_gradient_colors()->[Color32;4]{
-    [rgb(45,12,89),rgb(83,23,70),rgb(115,59,23),rgb(91,29,76)]
+    [rgb(26,12,45),rgb(38,15,51),rgb(72,37,38),rgb(40,16,45)]
 }
 
 /// Paint a lightweight, static violet-to-orange sunset in central panels.
@@ -160,6 +160,14 @@ mod tests {
         assert!(sunset[0].b()>sunset[0].r(), "Vice starts purple");
         assert!(sunset[2].r()>sunset[2].b(), "Vice ends warm");
         assert!(swatches(ThemeKind::Vice).accent.r()>swatches(ThemeKind::Vice).accent.b());
+        // The sunset is secondary; cards stay more distinct from the panel.
+        let vice=swatches(ThemeKind::Vice);
+        assert!(vice.card.r()>vice.panel.r());
+        assert!(vice.card.g()>vice.panel.g());
+        assert!(vice.card.b()>vice.panel.b());
+        assert!(vice.accent.r()>vice.card.r());
+        // Lower-right warmth is deliberately restrained compared with neon accents.
+        assert!(sunset[2].r()<vice.accent.r()/2);
         assert_eq!(ThemeKind::from_id("unknown"),None);
         assert_eq!(ThemeKind::from_id(""),None);
     }

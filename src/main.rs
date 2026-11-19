@@ -2195,6 +2195,17 @@ impl BoothApp {
                 ).color(colors().muted).size(12.0));
                 }
                 if self.configured && self.settings_section==SettingsSection::Appearance {
+                // Keep the controls in one legible, opaque block on Vice.
+                // Other palettes retain their original unframed spacing.
+                let mut appearance_frame=egui::Frame::new();
+                if theme::selected()==ThemeKind::Vice {
+                    appearance_frame=appearance_frame
+                        .fill(colors().panel)
+                        .stroke(egui::Stroke::new(1.0,colors().stroke))
+                        .corner_radius(12)
+                        .inner_margin(egui::Margin::symmetric(18,18));
+                }
+                appearance_frame.show(ui,|ui|{
                 ui.add_space(8.0);
                 ui.label(RichText::new(tr("Paleta de colores")).strong().size(17.0));
                 ui.label(RichText::new(tr("Cambia la apariencia de toda la app. Tu elección se guarda para el siguiente inicio.")
@@ -2224,7 +2235,7 @@ impl BoothApp {
                         // The sunset orange should be visible in Vice's preview
                         // even though its content cards remain dark for readability.
                         let preview_colors=if kind==ThemeKind::Vice{
-                            [preview.bg,Color32::from_rgb(115,59,23),
+                            [preview.bg,Color32::from_rgb(149,80,57),
                                 preview.primary,preview.accent]
                         }else{
                             [preview.bg,preview.card,preview.primary,preview.accent]
@@ -2263,6 +2274,7 @@ impl BoothApp {
                 ).color(colors().muted).size(12.0));
                 ui.hyperlink_to(tr("Solicitar otro idioma"),
                     "https://github.com/ShxwZ/SZKura/issues/new");
+                });
                 }
                 if self.configured && self.settings_section==SettingsSection::Backup {
                 ui.add_space(8.0);
