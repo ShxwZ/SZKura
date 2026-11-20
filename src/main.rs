@@ -820,9 +820,9 @@ impl BoothApp {
             }
         }
     }
-    /// Opening from SZKura always creates (or reuses) a labeled copy in the
-    /// bounded Unity cache. Never open the untagged source if labeling fails:
-    /// the user explicitly requested that the normal import action tags assets.
+    /// Tag a copy of Unity packages when the archive contains a real folder
+    /// GUID. Some valid packages contain only files: in that case skip labels
+    /// and open the unchanged original. All other export errors still abort.
     fn launch_unity_package(
         &mut self,source:PathBuf,entry:Option<UnityPackage>,id:i64,category:String
     ){
@@ -833,17 +833,24 @@ impl BoothApp {
                 )?
             }else{source};
             let label=unitypackage_labels::label_for_category(&category)?;
-            let tagged=unitypackage_labels::cached_labeled_unitypackage(
+            let prepared=unitypackage_labels::cached_labeled_unitypackage(
                 &original,&paths.unity_cache,&category
             )?;
-            let message=match open_unity_file(&tagged){
+            let message=match open_unity_file(&prepared.path){
+                Ok(()) if prepared.skipped_no_folder=>
+                    "Paquete enviado a Unity sin etiquetas: no incluye una carpeta Unity etiquetable.".into(),
                 Ok(())=>format!("Copia etiquetada enviada a Unity: {label}"),
                 Err(error)=>{
-                    // Unity may be absent or OS associations unavailable. Only
-                    // reveal the labeled copy for importing manually.
-                    let _=reveal_file(&tagged.to_string_lossy());
-                    format!("No se abrió Unity; importa manualmente la copia etiquetada: {} ({error})",
-                        tagged.display())
+                    // Unity may be absent or OS associations unavailable.
+                    // Reveal the prepared file (or original when no folders).
+                    let _=reveal_file(&prepared.path.to_string_lossy());
+                    if prepared.skipped_no_folder {
+                        format!("No se abrió Unity; importa manualmente el paquete sin etiquetas: {} ({error})",
+                            prepared.path.display())
+                    }else{
+                        format!("No se abrió Unity; importa manualmente la copia etiquetada: {} ({error})",
+                            prepared.path.display())
+                    }
                 }
             };
             Ok(JobResult{message,select_id:Some(id)})
@@ -1448,7 +1455,7 @@ impl BoothApp {
                                         if direct_package && ui.add_enabled(available && !busy,
                                             egui::Button::new(tr("Abrir en Unity"))
                                                 .min_size(egui::vec2(0.0,34.0)))
-                                            .on_hover_text(tr("Al abrir, se añade automáticamente la etiqueta SZKura en una copia de caché."))
+                                            .on_hover_text(tr("Al abrir, se etiqueta la carpeta incluida si existe; de lo contrario se abre el paquete original sin etiquetas."))
                                             .clicked(){
                                             open_direct=Some(source.clone());
                                         }
@@ -1624,9 +1631,14 @@ impl BoothApp {
                             let report=unitypackage_labels::export_labeled_unitypackage(
                                 &input,&destination,&category)?;
                             Ok(JobResult {
-                                message:format!("{}: {} | {}: {}",
-                                    tr("Copia etiquetada creada"),destination.display(),
-                                    report.label,report.labeled_assets+report.already_labeled),
+                                message:if report.skipped_no_folder {
+                                    format!("Copia creada sin etiquetas (no se incluyeron carpetas Unity): {}",
+                                        destination.display())
+                                }else{
+                                    format!("{}: {} | {}: {}",
+                                        tr("Copia etiquetada creada"),destination.display(),
+                                        report.label,report.labeled_assets+report.already_labeled)
+                                },
                                 select_id:Some(id),
                             })
                         });
@@ -3008,7 +3020,7 @@ fn show_unity_paths_result(
                     }
                     if let Ok(unity_label)=unitypackage_labels::label_for_category(category) {
                         ui.add_space(6.0);
-                        ui.label(RichText::new(tr("Al abrir en Unity desde SZKura, se etiqueta solo la primera carpeta del paquete o la primera subcarpeta disponible."))
+                        ui.label(RichText::new(tr("Al abrir en Unity, se etiqueta la primera carpeta incluida; si no existe ninguna, se omite el etiquetado y se abre el paquete original."))
                             .size(12.0).color(colors().text));
                         ui.label(RichText::new(tr("La etiqueta de carpeta no se hereda por los archivos internos en Unity."))
                             .size(12.0).color(colors().muted));
@@ -3020,7 +3032,7 @@ fn show_unity_paths_result(
                                 .size(12.0).color(colors().accent));
                             if ui.add_enabled(can_export,egui::Button::new(
                                 tr("Exportar copia etiquetada...")))
-                                .on_hover_text(tr("Conserva GUIDs, rutas y demás etiquetas; importar manualmente en Unity."))
+                                .on_hover_text(tr("Conserva GUIDs, rutas y demás etiquetas. Sin carpetas Unity, exporta una copia sin nuevas etiquetas."))
                                 .clicked() {
                                 export_requested=true;
                             }

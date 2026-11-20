@@ -20,6 +20,17 @@ pub struct LabeledExportReport {
     pub labeled_assets: usize,
     pub already_labeled: usize,
     pub label: String,
+    /// No folder asset metadata was included, so the package was copied
+    /// unchanged at the asset level rather than labeling every file.
+    pub skipped_no_folder: bool,
+}
+
+/// Opening an unlabelable package uses the original source, not a pointless
+/// cached copy. Other labeling failures are never silently ignored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedLabeledPackage {
+    pub path: std::path::PathBuf,
+    pub skipped_no_folder: bool,
 }
 
 /// Unity label names are stable, English-only IDs independent of the UI
@@ -43,6 +54,15 @@ pub fn label_for_category(category: &str) -> Result<String> {
 pub fn export_labeled_unitypackage(
     source: &Path, destination: &Path, category: &str
 ) -> Result<LabeledExportReport> {
+    export_labeled_unitypackage_with_guids(source,destination,category,None)
+}
+
+/// If the cache already scanned this package, pass its eligible folder GUIDs
+/// to avoid decompressing the archive twice. The public export still scans.
+fn export_labeled_unitypackage_with_guids(
+    source: &Path, destination: &Path, category: &str,
+    known_eligible: Option<BTreeSet<String>>
+) -> Result<LabeledExportReport> {
     let label = label_for_category(category)?;
     if source.extension().and_then(|x|x.to_str())
         .is_none_or(|x|!x.eq_ignore_ascii_case("unitypackage"))
@@ -61,10 +81,13 @@ pub fn export_labeled_unitypackage(
     // Pass 1: identify the first real folder *represented by a GUID and
     // asset.meta in the package*, not every file under Assets/. The TAR stream
     // is validated before writing the proposed output.
-    let eligible = eligible_guids(source)?;
-    if eligible.is_empty() {
-        bail!("No se encontró una carpeta de Unity incluida en el paquete para etiquetar");
-    }
+    let eligible = match known_eligible {
+        Some(guids)=>guids,
+        None=>eligible_guids(source)?,
+    };
+    // A package may legitimately contain only files, with no exported folder
+    // .meta. Copy its entries without modifying any asset and report the skip.
+    let skipped_no_folder=eligible.is_empty();
 
     // Same filesystem directory => atomic persist_noclobber, no partial output
     // on errors and no risk of overwriting an existing package.
@@ -128,6 +151,7 @@ pub fn export_labeled_unitypackage(
         .map_err(|e|e.error).context("No se pudo guardar la copia sin sobrescribir el destino")?;
     Ok(LabeledExportReport {
         labeled_assets: labeled, already_labeled: already, label,
+        skipped_no_folder,
     })
 }
 
@@ -137,7 +161,7 @@ pub fn export_labeled_unitypackage(
 /// This function must run in a worker, never on the egui render thread.
 pub fn cached_labeled_unitypackage(
     source: &Path, cache: &Path, category: &str
-) -> Result<std::path::PathBuf> {
+) -> Result<CachedLabeledPackage> {
     let label = label_for_category(category)?;
     let metadata = std::fs::metadata(source)
         .context("No se pudo leer el paquete de origen")?;
@@ -163,7 +187,18 @@ pub fn cached_labeled_unitypackage(
             || entry.len()>crate::package_inspect::MAX_PACKAGE_BYTES {
             bail!("Copia etiquetada en caché no válida. Vacía la caché Unity");
         }
-        return Ok(destination);
+        return Ok(CachedLabeledPackage {
+            path:destination,skipped_no_folder:false,
+        });
+    }
+    // The missing-folder case is not an error: launch the original package,
+    // without generating/recompressing a useless labeled cache file.
+    // All other validation errors from the archive scanner still propagate.
+    let eligible=eligible_guids(source)?;
+    if eligible.is_empty() {
+        return Ok(CachedLabeledPackage {
+            path:source.to_path_buf(),skipped_no_folder:true,
+        });
     }
     let used=std::fs::read_dir(cache)?.try_fold(0u64,|sum,entry|{
         let entry=entry?;
@@ -178,7 +213,9 @@ pub fn cached_labeled_unitypackage(
     if used.saturating_add(metadata.len())>crate::package_inspect::MAX_CACHE_BYTES {
         bail!("La caché Unity supera 4 GiB. Vacíala antes de importar");
     }
-    match export_labeled_unitypackage(source,&destination,category) {
+    match export_labeled_unitypackage_with_guids(
+        source,&destination,category,Some(eligible)
+    ) {
         Ok(_) => {},
         Err(error) if destination.is_file() => {
             // Another worker may have completed the same content/category key.
@@ -195,7 +232,9 @@ pub fn cached_labeled_unitypackage(
         let _=std::fs::remove_file(&destination);
         bail!("La caché Unity supera 4 GiB. Vacíala antes de importar");
     }
-    Ok(destination)
+    Ok(CachedLabeledPackage {
+        path:destination,skipped_no_folder:false,
+    })
 }
 
 fn member_guid<'a>(path: &'a str, name: &str) -> Option<&'a str> {
@@ -426,6 +465,7 @@ mod tests {
         let report=export_labeled_unitypackage(&src,&dst,"Ropa").unwrap();
         assert_eq!(report.labeled_assets,1);
         assert_eq!(report.already_labeled,0);
+        assert!(!report.skipped_no_folder);
         let new=contents(&dst);
         assert_eq!(old.len(),new.len());
         for (name,bytes) in old {
@@ -458,7 +498,9 @@ mod tests {
         let cache=dir.path().join("cache");
         fixture(&src,true);
         let before=std::fs::read(&src).unwrap();
-        let exported=cached_labeled_unitypackage(&src,&cache,"Ropa").unwrap();
+        let result=cached_labeled_unitypackage(&src,&cache,"Ropa").unwrap();
+        assert!(!result.skipped_no_folder);
+        let exported=result.path;
         assert_ne!(exported,src);
         assert!(exported.is_file());
         assert_eq!(std::fs::read(&src).unwrap(),before);
@@ -473,15 +515,18 @@ mod tests {
                 assert_eq!(labeled[&name],data);
             }
         }
-        assert_eq!(cached_labeled_unitypackage(&src,&cache,"Ropa").unwrap(),exported);
+        let repeated=cached_labeled_unitypackage(&src,&cache,"Ropa").unwrap();
+        assert_eq!(repeated.path,exported);
+        assert!(!repeated.skipped_no_folder);
         let other=cached_labeled_unitypackage(&src,&cache,"Pelo").unwrap();
-        assert_ne!(other,exported);
-        assert!(String::from_utf8(contents(&other)[&format!("{C}/asset.meta")].clone())
+        assert!(!other.skipped_no_folder);
+        assert_ne!(other.path,exported);
+        assert!(String::from_utf8(contents(&other.path)[&format!("{C}/asset.meta")].clone())
             .unwrap().contains("- SZKura_Hair"));
-        assert!(!String::from_utf8(contents(&other)[&format!("{A}/asset.meta")].clone())
+        assert!(!String::from_utf8(contents(&other.path)[&format!("{A}/asset.meta")].clone())
             .unwrap().contains("SZKura_Hair"));
         // Versioned key ensures the old broad-tagging cache is never reused.
-        assert!(other.file_name().unwrap().to_string_lossy().starts_with("labeled-folder-en-v3-"));
+        assert!(other.path.file_name().unwrap().to_string_lossy().starts_with("labeled-folder-en-v3-"));
     }
 
     #[test]
@@ -529,9 +574,23 @@ mod tests {
         add_entry(&mut tar,&format!("{A}/asset.meta"),meta.as_bytes());
         add_entry(&mut tar,&format!("{A}/pathname"),b"Assets/Outfit/file.prefab");
         tar.into_inner().unwrap().finish().unwrap();
-        let error=export_labeled_unitypackage(&src,&dst,"Ropa").unwrap_err();
-        assert!(error.to_string().contains("carpeta de Unity"));
-        assert!(!dst.exists());
+        let before=std::fs::read(&src).unwrap();
+        let report=export_labeled_unitypackage(&src,&dst,"Ropa").unwrap();
+        assert!(report.skipped_no_folder);
+        assert_eq!(report.labeled_assets,0);
+        assert_eq!(report.already_labeled,0);
+        assert!(dst.is_file());
+        assert_eq!(contents(&src),contents(&dst));
+        assert_eq!(std::fs::read(&src).unwrap(),before);
+        // Opening the same file skips labeling without a new cache artifact.
+        let cache=dir.path().join("cache");
+        let cached=cached_labeled_unitypackage(&src,&cache,"Ropa").unwrap();
+        assert!(cached.skipped_no_folder);
+        assert_eq!(cached.path,src);
+        assert_eq!(std::fs::read(&src).unwrap(),before);
+        assert_eq!(std::fs::read_dir(&cache).unwrap().count(),0);
+        // Subsequent opens are equally safe and don't invent fake labels.
+        assert!(cached_labeled_unitypackage(&src,&cache,"Ropa").unwrap().skipped_no_folder);
     }
 
     #[test]
@@ -542,5 +601,8 @@ mod tests {
         std::fs::write(&src,b"not a gzip").unwrap();
         assert!(export_labeled_unitypackage(&src,&dst,"Ropa").is_err());
         assert!(!dst.exists());
+        let cache=dir.path().join("cache");
+        assert!(cached_labeled_unitypackage(&src,&cache,"Ropa").is_err());
+        assert_eq!(std::fs::read(&src).unwrap(),b"not a gzip");
     }
 }
