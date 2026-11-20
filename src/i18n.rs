@@ -143,6 +143,7 @@ pub fn translate(language:Language,s:&str)->&str {
         "Jade"=>"Jade",
         "Amatista"=>"Amethyst",
         "Ámbar"=>"Amber",
+        "Vice"=>"Vice",
         "Copia de seguridad de la biblioteca"=>"Library backup",
         "Exporta o importa SQLite y las portadas locales. Los archivos originales no se incluyen: se conservan como archivos externos en sus carpetas."=>"Export or import SQLite and local covers. Original archives are excluded and remain in their folders.",
         "Exportar biblioteca (.szkura)"=>"Export library (.szkura)",
@@ -352,6 +353,145 @@ pub fn translate(language:Language,s:&str)->&str {
         "Las fichas BOOTH existentes conservarán sus metadatos. No se ejecutarán los archivos."=>"Existing BOOTH products will retain their metadata. Files will not be executed.",
         "Importar enlace SZKura"=>"Import SZKura link",
         "Ficha transferida e importada correctamente"=>"Transferred product imported successfully.",
+        "Almacenamiento"=>"Storage",
+        "Apariencia e idioma"=>"Appearance & language",
+        "Copia de seguridad"=>"Backup",
+        "Actualizaciones"=>"Updates",
+        "SELECCIÓN PARA COMPARTIR"=>"SHARE SELECTION",
+        "Elige fichas completas en la misma cuadrícula que tu biblioteca. Nada se comparte hasta que lo inicies."=>"Select whole products in your normal library grid. Nothing is shared until you start.",
+        "Al elegir una ficha se incluyen sus adjuntos. Respeta las licencias de redistribución de BOOTH."=>"Selecting a product includes its attachments. Respect BOOTH redistribution licenses.",
+        "Para cambiar qué fichas se comparten, detén la sesión."=>"To change shared products, stop the session.",
+        "Elegir fichas para compartir"=>"Choose products to share",
+        "Compartir también por Internet (Cloudflare Tunnel)"=>"Also share over the Internet (Cloudflare Tunnel)",
+        "Se creará un enlace HTTPS temporal. Requiere Cloudflare Tunnel."=>"A temporary HTTPS link will be created. Requires Cloudflare Tunnel.",
+        "Compartir solo en la red local."=>"Sharing on the local network only.",
+        "La URL HTTPS usa Cloudflare Quick Tunnel; no es un servicio permanente."=>"The HTTPS URL uses Cloudflare Quick Tunnel; it is not a permanent service.",
+        "El acceso LAN utiliza HTTP sin cifrar: solo redes privadas de confianza."=>"LAN access uses unencrypted HTTP: trusted private networks only.",
+        "Detén Compartir ficha antes de publicar una biblioteca. Solo puede haber un túnel activo."=>"Stop product sharing before publishing a library. Only one tunnel can run at a time.",
+        "Se descargará desde GitHub oficial de Cloudflare solo con tu permiso."=>"Download only with your consent from Cloudflare's official GitHub releases.",
+        "Se comprobará el SHA-256 antes de ejecutarlo. Puedes eliminar el componente desde Ajustes."=>"The SHA-256 will be verified before execution. You can remove the component in Settings.",
+        "Selecciona las fichas que deseas publicar."=>"Choose the products you want to publish.",
+        "Importar a mi biblioteca"=>"Import into my library",
+        "Solo guardar ficha"=>"Save product only",
+        "Introduce la invitación LAN o HTTPS de Cloudflare que compartió el anfitrión."=>"Enter the LAN or Cloudflare HTTPS invitation shared by the host.",
+        "Biblioteca remota"=>"Remote library",
+        "BIBLIOTECAS REMOTAS"=>"REMOTE LIBRARIES",
+        "Solo seleccionadas"=>"Selected only",
+        "Seleccionar ficha"=>"Select product",
+        "Quitar selección"=>"Remove selection",
+        "seleccionadas"=>"selected",
+        "Marca las fichas completas; se compartirán con todos sus adjuntos. Los productos sin marcar no serán visibles."=>"Select whole products, including all attachments. Unselected products remain invisible.",
+        "Volver a configuración"=>"Back to settings",
+        "Compartir biblioteca"=>"Share library",
+        "Se inicia manualmente y se detiene al cerrar SZKura. Solo se publica lo seleccionado."=>"Starts manually and stops when SZKura closes. Only selected items are published.",
+        "Solo para LAN privada de confianza; el transporte HTTP no cifra la conexión. No abrir puertos a Internet."=>"For trusted private LANs only; HTTP does not encrypt traffic. Do not expose ports to the Internet.",
+        "Publica archivos únicamente si su licencia permite redistribuirlos."=>"Share files only if their license allows redistribution.",
+        "Biblioteca compartida detenida."=>"Library sharing stopped.",
+        "Fichas visibles"=>"Visible products",
+        "Adjuntos descargables"=>"Downloadable attachments",
+        "Copiar invitación"=>"Copy invitation",
+        "Detener biblioteca compartida"=>"Stop sharing library",
+        "Para cambiar los permisos, detén la sesión y vuelve a compartir."=>"To change permissions, stop sharing and start a new session.",
+        "Preparando fichas y permisos..."=>"Preparing products and permissions...",
+        "Cargando portada..."=>"Loading cover...",
+        "Portada no disponible"=>"Cover unavailable",
+        "Cargando ficha remota..."=>"Loading remote product...",
+        "Verificando archivos locales en segundo plano..."=>"Checking local files in the background...",
+        "Reintentar portadas"=>"Retry covers",
+        "Error al comprobar archivos locales"=>"Could not check local files",
+        "Resumen de publicación"=>"Sharing overview",
+        "Límites actuales por sesión"=>"Current session limits",
+        "Fichas no compartidas"=>"Products not shared",
+        "NSFW ocultas"=>"Hidden NSFW products",
+        "Estimación basada en SQLite. Los filtros solo cambian lo que ves, no lo que se publicará."=>"Estimate from SQLite. Filters change what you see, not what you share.",
+        "Selección supera los límites"=>"Selection exceeds current limits",
+        "Tamaño total compartido"=>"Total shared size",
+        "Cargar productos para seleccionar"=>"Load products for selection",
+        "Fichas seleccionadas"=>"Selected products",
+        "Limpiar selección"=>"Clear selection",
+        "Ninguna ficha se publicará hasta que la selecciones y pulses Compartir biblioteca."=>"No products will be published until you select them and start sharing.",
+        "Filtrar fichas por nombre, creador o categoría..."=>"Filter products by name, creator or category...",
+        "Página"=>"Page",
+        "Anterior"=>"Previous",
+        "Siguiente"=>"Next",
+        "Seleccionar las fichas de esta página"=>"Select products on this page",
+        "Ocultar archivos"=>"Hide files",
+        "Elegir adjuntos"=>"Choose attachments",
+        "Por defecto, ningún archivo se puede descargar."=>"No files can be downloaded by default.",
+        "Iniciar compartir biblioteca"=>"Start sharing library",
+        "Biblioteca remota (solo lectura)"=>"Remote library (read-only)",
+        "BIBLIOTECA REMOTA"=>"REMOTE LIBRARY",
+        "Volver a mi biblioteca"=>"Return to my library",
+        "Pega la invitación de otro SZKura en tu red local."=>"Paste an invitation from another SZKura on your local network.",
+        "Conectar a biblioteca"=>"Connect to library",
+        "Desconectar"=>"Disconnect",
+        "fichas compartidas"=>"shared products",
+        "Volver al catálogo remoto"=>"Back to remote catalog",
+        "Adjuntos autorizados para descargar"=>"Attachments available for download",
+        "El anfitrión no ha ofrecido adjuntos para esta ficha."=>"The host has not offered attachments for this product.",
+        "Añadir ficha sin archivos"=>"Add product without files",
+        "Descargar e importar seleccionados"=>"Download and import selected",
+        "Cancelar descarga"=>"Cancel download",
+        "Buscar productos..."=>"Search products...",
+        "Todas las categorías"=>"All categories",
+        "Filtrar avatar..."=>"Filter avatar...",
+        "Resultados"=>"Results",
+        "archivos disponibles"=>"available files",
+        "Biblioteca compartida activa."=>"Library sharing active.",
+        "Compartiendo biblioteca (fichas)"=>"Sharing library (products)",
+        "Modo de publicación:"=>"Publishing mode:",
+        "Compartir salvo excluidas"=>"Share all except excluded",
+        "Compartir solo incluidas"=>"Share only included",
+        "Se compartirán todas las fichas salvo las excluidas al iniciar la sesión."=>"When started, all products except excluded ones will be shared.",
+        "Solo se compartirán las fichas marcadas como incluidas."=>"Only products marked as included will be shared.",
+        "Permitir compartir también fichas NSFW"=>"Allow sharing NSFW products too",
+        "Fichas que se compartirán"=>"Products to be shared",
+        "Nombre que verá el visitante"=>"Library name shown to visitors",
+        "Mi biblioteca compartida"=>"My shared library",
+        "Solo excluidas"=>"Excluded only",
+        "Excluir ficha"=>"Exclude product",
+        "Volver a incluir"=>"Include again",
+        "Nuevo en mi biblioteca"=>"New to my library",
+        "Ya en mi biblioteca"=>"Already in my library",
+        "Archivos por actualizar"=>"Files need updating",
+        "Comprobando disponibilidad local"=>"Checking local files",
+        "Ya está en mi biblioteca"=>"Already in my library",
+        "Actualizar ficha completa"=>"Update full product",
+        "Importar ficha completa"=>"Import full product",
+        "Se comprobarán los archivos existentes y solo se descargarán los nuevos o cambiados."=>"Existing files will be checked. Only missing or changed files will be downloaded.",
+        "La operación se confirma completa o no modifica la biblioteca. Los metadatos y versiones locales anteriores se conservan."=>"Either the full import completes or the library remains unchanged. Existing metadata and file versions are preserved.",
+        "Archivos de la ficha"=>"Product files",
+        "Archivos nuevos o modificados"=>"New or modified files",
+        "Ficha completa importada correctamente."=>"Full product imported successfully.",
+        "Ficha actualizada; las versiones locales anteriores se conservan."=>"Product updated; previous local versions were preserved.",
+        "Explorando biblioteca:"=>"Browsing library:",
+        "Actualizar lista de productos"=>"Refresh product list",
+        "Confirmar biblioteca compartida"=>"Confirm shared library",
+        "Publicar biblioteca"=>"Publish library",
+        "Acceso por Internet mediante un enlace HTTPS temporal de Cloudflare."=>"Internet access through a temporary Cloudflare HTTPS link.",
+        "Acceso mediante HTTP en la red local de confianza."=>"HTTP access on a trusted local network.",
+        "Se compartirán todos los adjuntos de las fichas elegidas. Comprueba que sus licencias permitan redistribuirlos."=>"All attachments of the selected products will be shared. Verify that their licenses permit redistribution.",
+        "Las fichas excluidas no aparecerán en el catálogo remoto."=>"Excluded products will not appear in the remote catalog.",
+        "Solo lectura"=>"Read-only",
+        "Catálogo ajeno en solo lectura. Importar no modifica la biblioteca anfitriona."=>"A read-only remote catalog. Importing does not modify the host's library.",
+        "Los productos se cargan al desplazarse"=>"More products load as you scroll",
+        "ESTÁS EN OTRA BIBLIOTECA · SOLO LECTURA"=>"REMOTE LIBRARY · READ ONLY",
+        "ELIGE QUÉ COMPARTIR"=>"SELECT PRODUCTS TO SHARE",
+        "Selecciona las fichas y los archivos que deseas publicar."=>"Select the products and files to publish.",
+        "Selecciona al menos una ficha."=>"Select at least one product.",
+        "La biblioteca supera el límite de 2000 productos."=>"The library exceeds the 2,000-product limit.",
+        "Error leyendo biblioteca"=>"Could not read library",
+        "Error leyendo archivos"=>"Could not read files",
+        "Error al compartir"=>"Could not share library",
+        "Conectando con la biblioteca..."=>"Connecting to library...",
+        "Cargando selección de productos..."=>"Loading products for selection...",
+        "Biblioteca remota conectada."=>"Remote library connected.",
+        "Error al conectar"=>"Could not connect",
+        "Error al cargar catálogo"=>"Could not load catalog",
+        "Error al cargar ficha"=>"Could not load product",
+        "Error al importar"=>"Could not import",
+        "Descargando y verificando archivos autorizados..."=>"Downloading and verifying authorized files...",
+        "Ficha añadida a mi biblioteca."=>"Product added to my library.",
         _=>s,
     }
 }
@@ -522,6 +662,93 @@ mod tests{
         assert_eq!(Language::from_id("en"),Some(Language::English));
         assert_eq!(Language::from_id("xx"),None);
     }
+    #[test]
+    fn remote_sync_and_publication_modes_translate(){
+        for (es,en) in [
+            ("Compartir salvo excluidas","Share all except excluded"),
+            ("Compartir solo incluidas","Share only included"),
+            ("Actualizar ficha completa","Update full product"),
+            ("Importar ficha completa","Import full product"),
+            ("Ya en mi biblioteca","Already in my library"),
+            ("Fichas que se compartirán","Products to be shared"),
+            ("ESTÁS EN OTRA BIBLIOTECA · SOLO LECTURA","REMOTE LIBRARY · READ ONLY"),
+        ] {
+            assert_eq!(translate(Language::Spanish,es),es);
+            assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
+    #[test]
+    fn remote_cover_and_detail_states_are_translated(){
+        for (es,en) in [
+            ("Cargando portada...","Loading cover..."),
+            ("Portada no disponible","Cover unavailable"),
+            ("Cargando ficha remota...","Loading remote product..."),
+            ("Verificando archivos locales en segundo plano...","Checking local files in the background..."),
+            ("Reintentar portadas","Retry covers"),
+        ]{
+            assert_eq!(translate(Language::Spanish,es),es);
+            assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
+    #[test]
+    fn publication_summary_is_translated(){
+        for (es,en) in [
+            ("Resumen de publicación","Sharing overview"),
+            ("Fichas no compartidas","Products not shared"),
+            ("NSFW ocultas","Hidden NSFW products"),
+            ("Selección supera los límites","Selection exceeds current limits"),
+            ("Tamaño total compartido","Total shared size"),
+        ]{
+            assert_eq!(translate(Language::Spanish,es),es);
+            assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
+    #[test]
+    fn metadata_only_sharing_status_is_translated(){
+        assert_eq!(translate(Language::Spanish,"Preparando fichas y permisos..."),
+            "Preparando fichas y permisos...");
+        assert_eq!(translate(Language::English,"Preparando fichas y permisos..."),
+            "Preparing products and permissions...");
+    }
+
+    #[test]
+    fn settings_section_tabs_are_translated() {
+        for (spanish,english) in [
+            ("Almacenamiento","Storage"),
+            ("Apariencia e idioma","Appearance & language"),
+            ("Copia de seguridad","Backup"),
+            ("Compartir biblioteca","Share library"),
+            ("Actualizaciones","Updates"),
+        ]{
+            assert_eq!(translate(Language::Spanish,spanish),spanish);
+            assert_eq!(translate(Language::English,spanish),english);
+        }
+    }
+
+    #[test]
+    fn shared_library_controls_are_translated() {
+        for (es,en) in [
+            ("Compartir biblioteca","Share library"),
+            ("Conectar a biblioteca","Connect to library"),
+            ("Iniciar compartir biblioteca","Start sharing library"),
+            ("Detener biblioteca compartida","Stop sharing library"),
+            ("Biblioteca remota (solo lectura)","Remote library (read-only)"),
+            ("Añadir ficha sin archivos","Add product without files"),
+            ("Descargar e importar seleccionados","Download and import selected"),
+            ("Importar a mi biblioteca","Import into my library"),
+            ("Elegir fichas para compartir","Choose products to share"),
+            ("BIBLIOTECAS REMOTAS","REMOTE LIBRARIES"),
+            ("Compartir también por Internet (Cloudflare Tunnel)","Also share over the Internet (Cloudflare Tunnel)"),
+            ("Solo seleccionadas","Selected only"),
+        ] {
+            assert_eq!(translate(Language::Spanish,es),es);
+            assert_eq!(translate(Language::English,es),en);
+        }
+    }
+
     #[test]
     fn transfer_ui_is_translated_in_english_and_spanish() {
         for (spanish,english) in [

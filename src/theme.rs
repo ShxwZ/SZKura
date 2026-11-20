@@ -5,20 +5,22 @@ use std::sync::atomic::{AtomicU8,Ordering};
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 #[repr(u8)]
-pub enum ThemeKind { Graphite=0, Sage=1, Purple=2, Orange=3 }
+pub enum ThemeKind { Graphite=0, Sage=1, Purple=2, Orange=3, Vice=4 }
 
 impl ThemeKind {
-    pub const ALL:[Self;4]=[Self::Graphite,Self::Sage,Self::Purple,Self::Orange];
+    pub const ALL:[Self;5]=[Self::Graphite,Self::Sage,Self::Purple,Self::Orange,Self::Vice];
     pub fn id(self)->&'static str {
         match self {
             Self::Graphite=>"graphite",Self::Sage=>"sage",
-            Self::Purple=>"purple",Self::Orange=>"orange"
+            Self::Purple=>"purple",Self::Orange=>"orange",
+            Self::Vice=>"vice"
         }
     }
     pub fn label(self)->&'static str {
         match self {
             Self::Graphite=>"Ónix",Self::Sage=>"Jade",
-            Self::Purple=>"Amatista",Self::Orange=>"Ámbar"
+            Self::Purple=>"Amatista",Self::Orange=>"Ámbar",
+            Self::Vice=>"Vice"
         }
     }
     pub fn from_id(id:&str)->Option<Self>{
@@ -71,6 +73,18 @@ pub fn swatches(kind:ThemeKind)->Palette {
             selection:rgb(113,73,154),extreme_bg:rgb(25,20,34),
             faint_bg:rgb(43,33,56),
         },
+        ThemeKind::Vice=>Palette {
+            // Midnight violet panels and opaque, distinct cards. The sunset
+            // belongs to the background, not to interactive surfaces.
+            bg:rgb(23,11,41),panel:rgb(31,13,50),card:rgb(52,24,67),
+            stroke:rgb(105,57,100),text:rgb(248,238,250),muted:rgb(197,171,195),
+            accent:rgb(243,126,181),primary:rgb(159,48,105),
+            button_bg:rgb(49,24,64),hover_bg:rgb(78,35,79),
+            nav_bg:rgb(34,14,58),nav_selected:rgb(88,34,84),
+            nav_border:rgb(229,105,162),primary_border:rgb(234,113,164),
+            selection:rgb(126,47,102),extreme_bg:rgb(24,11,42),
+            faint_bg:rgb(43,24,53),
+        },
         ThemeKind::Orange=>Palette {
             bg:rgb(25,20,17),panel:rgb(35,27,23),card:rgb(46,36,29),
             stroke:rgb(87,67,53),text:rgb(245,237,227),muted:rgb(195,177,161),
@@ -84,11 +98,91 @@ pub fn swatches(kind:ThemeKind)->Palette {
     }
 }
 
+/// Subdued sunset (top-left, top-right, bottom-right, bottom-left).
+/// It should read as atmosphere rather than a bright orange surface.
+fn vice_gradient_colors()->[Color32;4]{
+    [rgb(26,12,45),rgb(38,15,51),rgb(72,37,38),rgb(40,16,45)]
+}
+
+/// Root panels must not paint opaque rectangles over the full-window
+/// background. All existing palettes keep their original solid fills.
+fn content_fill_for(kind:ThemeKind)->Color32{
+    if kind==ThemeKind::Vice{Color32::TRANSPARENT}else{swatches(kind).bg}
+}
+pub fn content_panel_fill()->Color32{content_fill_for(selected())}
+
+/// Slightly tinted chrome preserves navigation contrast, but the same global
+/// Vice sunset remains visible underneath the header, sidebar and status bar.
+fn chrome_fill_for(kind:ThemeKind)->Color32{
+    if kind==ThemeKind::Vice{
+        Color32::from_rgba_unmultiplied(23,11,42,166)
+    }else{swatches(kind).panel}
+}
+pub fn chrome_panel_fill()->Color32{chrome_fill_for(selected())}
+
+/// Paint ONE static gradient in window coordinates, before any egui panels.
+/// Previously each CentralPanel drew its own gradient in local coordinates,
+/// causing a hard rectangular edge where it met the header or sidebar.
+pub fn paint_vice_background(ctx:&eframe::egui::Context){
+    if selected()!=ThemeKind::Vice{return;}
+    let rect=ctx.content_rect();
+    if rect.width()<=0.0 || rect.height()<=0.0{return;}
+    let [top_left,top_right,bottom_right,bottom_left]=vice_gradient_colors();
+    let mut mesh=eframe::egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(),top_left);
+    mesh.colored_vertex(rect.right_top(),top_right);
+    mesh.colored_vertex(rect.right_bottom(),bottom_right);
+    mesh.colored_vertex(rect.left_bottom(),bottom_left);
+    mesh.add_triangle(0,1,2);
+    mesh.add_triangle(0,2,3);
+    ctx.layer_painter(eframe::egui::LayerId::background())
+        .add(eframe::egui::Shape::mesh(mesh));
+}
+
+/// Apply the active palette to ALL egui widget surfaces.
+/// Buttons and ComboBoxes use `weak_bg_fill` (not only `bg_fill`);
+/// expanded ComboBoxes use the separate `open` widget state.
+pub fn apply_widget_visuals(visuals:&mut eframe::egui::Visuals,p:Palette){
+    let w=&mut visuals.widgets;
+    let stroke=|color|eframe::egui::Stroke::new(1.0,color);
+    // egui dims disabled widgets separately; retain a muted opaque surface.
+    w.noninteractive.bg_fill=p.panel;
+    w.noninteractive.weak_bg_fill=p.panel;
+    w.noninteractive.bg_stroke=stroke(p.stroke);
+    w.noninteractive.fg_stroke.color=p.text;
+    w.inactive.bg_fill=p.button_bg;
+    w.inactive.weak_bg_fill=p.button_bg;
+    w.inactive.bg_stroke=stroke(p.stroke);
+    w.inactive.fg_stroke.color=p.text;
+    w.hovered.bg_fill=p.hover_bg;
+    w.hovered.weak_bg_fill=p.hover_bg;
+    w.hovered.bg_stroke=stroke(p.accent);
+    w.hovered.fg_stroke.color=p.text;
+    w.active.bg_fill=p.primary;
+    w.active.weak_bg_fill=p.primary;
+    w.active.bg_stroke=stroke(p.primary_border);
+    w.active.fg_stroke.color=p.text;
+    w.open.bg_fill=p.hover_bg;
+    w.open.weak_bg_fill=p.hover_bg;
+    w.open.bg_stroke=stroke(p.accent);
+    w.open.fg_stroke.color=p.text;
+}
+
+/// The selector always displays four swatches in the same positions.
+/// Vice swaps the second color to its sunset highlight; that is a color-only
+/// change, not a different layout or a special widget for one palette.
+pub fn preview_colors(kind:ThemeKind)->[Color32;4]{
+    let p=swatches(kind);
+    let secondary=if kind==ThemeKind::Vice{rgb(149,80,57)}else{p.card};
+    [p.bg,secondary,p.primary,p.accent]
+}
+
 static ACTIVE:AtomicU8=AtomicU8::new(ThemeKind::Sage as u8);
 pub fn selected()->ThemeKind{
     match ACTIVE.load(Ordering::Relaxed){
         0=>ThemeKind::Graphite,2=>ThemeKind::Purple,
-        3=>ThemeKind::Orange,_=>ThemeKind::Sage,
+        3=>ThemeKind::Orange,4=>ThemeKind::Vice,
+        _=>ThemeKind::Sage,
     }
 }
 pub fn select(kind:ThemeKind){ACTIVE.store(kind as u8,Ordering::Relaxed);}
@@ -114,10 +208,67 @@ mod tests {
         assert_eq!(ThemeKind::Sage.id(),"sage");
         assert_eq!(ThemeKind::Purple.id(),"purple");
         assert_eq!(ThemeKind::Orange.id(),"orange");
+        assert_eq!(ThemeKind::Vice.id(),"vice");
         let labels=ThemeKind::ALL.map(ThemeKind::label);
-        assert_eq!(labels,["Ónix","Jade","Amatista","Ámbar"]);
-        assert_eq!(labels.iter().copied().collect::<std::collections::HashSet<_>>().len(),4);
+        assert_eq!(labels,["Ónix","Jade","Amatista","Ámbar","Vice"]);
+        assert_eq!(labels.iter().copied().collect::<std::collections::HashSet<_>>().len(),5);
+        let sunset=vice_gradient_colors();
+        assert!(sunset[0].b()>sunset[0].r(), "Vice starts purple");
+        assert!(sunset[2].r()>sunset[2].b(), "Vice ends warm");
+        assert!(swatches(ThemeKind::Vice).accent.r()>swatches(ThemeKind::Vice).accent.b());
+        // The sunset is secondary; cards stay more distinct from the panel.
+        assert_eq!(content_fill_for(ThemeKind::Vice),Color32::TRANSPARENT);
+        assert!(chrome_fill_for(ThemeKind::Vice).a()>0);
+        assert!(chrome_fill_for(ThemeKind::Vice).a()<255);
+        for kind in [ThemeKind::Graphite,ThemeKind::Sage,
+            ThemeKind::Purple,ThemeKind::Orange] {
+            assert_eq!(content_fill_for(kind),swatches(kind).bg);
+            assert_eq!(chrome_fill_for(kind),swatches(kind).panel);
+        }
+        let vice=swatches(ThemeKind::Vice);
+        assert!(vice.card.r()>vice.panel.r());
+        assert!(vice.card.g()>vice.panel.g());
+        assert!(vice.card.b()>vice.panel.b());
+        assert!(vice.accent.r()>vice.card.r());
+        // Lower-right warmth is deliberately restrained compared with neon accents.
+        assert!(sunset[2].r()<vice.accent.r()/2);
         assert_eq!(ThemeKind::from_id("unknown"),None);
         assert_eq!(ThemeKind::from_id(""),None);
+    }
+    #[test]
+    fn theme_selector_preview_has_same_four_swatches_for_every_theme(){
+        for kind in ThemeKind::ALL {
+            let p=swatches(kind);
+            let colors=preview_colors(kind);
+            assert_eq!(colors.len(),4);
+            assert_eq!(colors[0],p.bg);
+            assert_eq!(colors[2],p.primary);
+            assert_eq!(colors[3],p.accent);
+            assert_eq!(colors[1],if kind==ThemeKind::Vice{
+                rgb(149,80,57)
+            }else{p.card});
+        }
+    }
+
+    #[test]
+    fn native_buttons_and_dropdowns_follow_every_palette(){
+        for kind in ThemeKind::ALL {
+            let p=swatches(kind);
+            let mut visuals=eframe::egui::Visuals::dark();
+            apply_widget_visuals(&mut visuals,p);
+            let w=&visuals.widgets;
+            assert_eq!(w.noninteractive.bg_fill,p.panel);
+            assert_eq!(w.inactive.bg_fill,p.button_bg);
+            assert_eq!(w.inactive.weak_bg_fill,p.button_bg);
+            assert_eq!(w.hovered.weak_bg_fill,p.hover_bg);
+            assert_eq!(w.active.weak_bg_fill,p.primary);
+            assert_eq!(w.open.bg_fill,p.hover_bg);
+            assert_eq!(w.open.weak_bg_fill,p.hover_bg);
+            assert_eq!(w.inactive.bg_stroke.color,p.stroke);
+            assert_eq!(w.hovered.bg_stroke.color,p.accent);
+            assert_eq!(w.active.bg_stroke.color,p.primary_border);
+            assert_eq!(w.open.bg_stroke.color,p.accent);
+            assert_eq!(w.open.fg_stroke.color,p.text);
+        }
     }
 }

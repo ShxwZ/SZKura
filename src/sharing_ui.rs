@@ -59,6 +59,7 @@ fn workflow_modal(
 
 pub struct SharingUi {
     pub enabled: bool,
+    library_share_busy:bool,
     share_target: Option<i64>,
     share_target_title: Option<String>,
     pending_asset: Option<i64>,
@@ -84,6 +85,7 @@ impl SharingUi {
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            library_share_busy:false,
             share_target: None,
             share_target_title: None,
             pending_asset: None,
@@ -106,8 +108,22 @@ impl SharingUi {
             import_rx: None,
         }
     }
+    pub fn product_share_busy(&self)->bool{
+        self.active.is_some() || self.active_asset.is_some()
+            || self.share_target.is_some() || self.share_rx.is_some()
+    }
+    pub fn set_library_share_busy(&mut self,busy:bool){
+        self.library_share_busy=busy;
+        if busy && self.share_target.is_some() && self.active.is_none()
+            && self.share_rx.is_none(){
+            self.share_target=None;
+            self.share_target_title=None;
+            self.consent=false;
+        }
+    }
     fn can_start_share(&self) -> bool {
-        self.enabled && self.active.is_none() && self.active_asset.is_none()
+        self.enabled && !self.library_share_busy
+            && self.active.is_none() && self.active_asset.is_none()
             && self.share_rx.is_none()
     }
     pub fn open_share(&mut self, id: i64, title: &str) {
@@ -264,7 +280,8 @@ impl SharingUi {
         } else {
             "Componente opcional: no descargado. Se solicitará permiso en el primer uso."
         })).color(p.muted).size(12.0));
-        if present && ui.add_enabled_ui(self.active.is_none() && !working, |ui| {
+        if present && ui.add_enabled_ui(self.active.is_none()
+            && !working && !self.library_share_busy, |ui| {
             action(ui, Icon::Trash, "Eliminar Cloudflare Tunnel descargado", false)
         }).inner {
             match share_transfer::remove_component(data_dir) {
@@ -279,7 +296,8 @@ impl SharingUi {
 
     fn begin_share(&mut self, data_dir: &Path, db_path: &Path, install: bool) {
         let Some(asset_id) = self.share_target else { return; };
-        if self.share_rx.is_some() || self.active.is_some() || !self.enabled { return; }
+        if self.share_rx.is_some() || self.active.is_some() || !self.enabled
+            || self.library_share_busy { return; }
         let (tx, rx) = mpsc::channel();
         let data = data_dir.to_path_buf();
         let db = db_path.to_path_buf();
@@ -637,6 +655,20 @@ mod tests {
         assert!(ui.can_start_share());
         ui.open_share(35,"Other product");
         assert_eq!(ui.share_target,Some(35));
+    }
+
+    #[test]
+    fn library_share_disables_temporary_product_tunnel() {
+        let mut ui=SharingUi::new(true);
+        assert!(ui.can_start_share());
+        ui.set_library_share_busy(true);
+        assert!(!ui.can_start_share());
+        ui.open_share(42,"Should be blocked");
+        assert!(ui.share_target.is_none());
+        ui.set_library_share_busy(false);
+        assert!(ui.can_start_share());
+        ui.open_share(42,"Available again");
+        assert_eq!(ui.share_target,Some(42));
     }
 
     #[test]

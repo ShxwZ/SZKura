@@ -384,6 +384,79 @@ pub fn import_shared(link: &str, password: &str, db_path: &Path,
     Ok(id)
 }
 
+/// A reusable, opt-in Cloudflare Quick Tunnel for another SZKura service.
+/// This is only constructed after explicit consent to install the verified
+/// cloudflared binary, and is independently stopped with the owning session.
+pub struct QuickTunnel {
+    pub base_url:String,
+    child:Arc<Mutex<Child>>,
+}
+impl QuickTunnel {
+    pub fn stop(&self){
+        if let Ok(mut child)=self.child.lock(){
+            let _=child.kill();
+            let _=child.wait();
+        }
+    }
+}
+impl Drop for QuickTunnel {
+    fn drop(&mut self){self.stop();}
+}
+
+/// Expose an already-started loopback HTTP service through HTTPS.
+/// Never installs software automatically. A shared UI guard must keep this
+/// mutually exclusive with the single-product sharing session.
+pub fn start_quick_tunnel(
+    data_dir:&Path,local_port:u16,cancel:&AtomicBool,
+)->Result<QuickTunnel> {
+    if cancel.load(Ordering::Relaxed){bail!("Operación cancelada");}
+    let executable=component_verified(data_dir)?;
+    // Cloudflare's global config must not be consulted by Quick Tunnel.
+    let config=data_dir.join("components").join("quick-tunnel.yml");
+    fs::write(&config,b"")?;
+    let mut command=Command::new(executable);
+    command.arg("--config").arg(config)
+        .arg("tunnel").arg("--no-autoupdate").arg("--url")
+        .arg(format!("http://127.0.0.1:{local_port}"))
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    #[cfg(windows)]{
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let mut child=command.spawn().context("No se pudo iniciar Cloudflare Tunnel")?;
+    let stderr=child.stderr.take().context("No se pudo leer la salida de cloudflared")?;
+    let (sender,receiver)=mpsc::channel();
+    thread::spawn(move||{
+        use std::io::{BufRead,BufReader};
+        let mut reported=false;
+        for line in BufReader::new(stderr).lines().map_while(std::result::Result::ok){
+            if !reported {
+                if let Some(url)=find_cloudflare_url(&line){
+                    let _=sender.send(url);
+                    reported=true;
+                }
+            }
+        }
+    });
+    let child=Arc::new(Mutex::new(child));
+    let started=Instant::now();
+    while started.elapsed()<Duration::from_secs(30) {
+        if cancel.load(Ordering::Relaxed){
+            let tunnel=QuickTunnel{base_url:String::new(),child};
+            tunnel.stop();
+            bail!("Operación cancelada");
+        }
+        if let Ok(base_url)=receiver.recv_timeout(Duration::from_millis(200)){
+            return Ok(QuickTunnel{base_url,child});
+        }
+        if child.lock().map_err(|_|anyhow!("Proceso de túnel inaccesible"))?
+            .try_wait()?.is_some(){break;}
+    }
+    let tunnel=QuickTunnel{base_url:String::new(),child};
+    tunnel.stop();
+    bail!("Cloudflare no ha devuelto una dirección HTTPS. Comprueba la conexión");
+}
+
 pub struct ShareSession {
     pub url: String,
     expires: Instant,

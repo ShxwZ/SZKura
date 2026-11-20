@@ -4,18 +4,32 @@
 
 ## Principios
 
-1. **Una interfaz, cuatro paletas.** Usar siempre `theme::colors()` para superficies y controles. `bg` = fondo general, `panel` = ventanas/barra lateral, `card` = tarjetas, `faint_bg` = fondo de portadas, `stroke` = bordes, `text`/`muted` = texto y `accent`/`primary` = énfasis y acciones. No fijar verdes u otros colores del tema original. Rojo tenue se reserva para acciones destructivas y avisos, no para acciones normales.
+1. **Una interfaz, cinco paletas.** Usar siempre `theme::colors()` para superficies y controles. `bg` = fondo general, `panel` = ventanas/barra lateral, `card` = tarjetas, `faint_bg` = fondo de portadas, `stroke` = bordes, `text`/`muted` = texto y `accent`/`primary` = énfasis y acciones. No fijar verdes u otros colores del tema original. Rojo tenue se reserva para acciones destructivas y avisos, no para acciones normales.
 2. **Escala consistente.** Inputs y botones habituales tienen **36 pt** de altura (`style.spacing.interact_size.y`). Controles de navegación: **184×36 pt**, esquinas de 8 pt. Formularios usan el ancho de la columna real, con etiquetas, inputs y selectores alineados; sin espacios en el texto para simular iconos ni geometrías dependientes de la fuente. Los editores de producto pasan a **una sola columna** cuando el área central mide menos de **940 pt** (medir `ui.available_width()` *dentro del scroll*, no el ancho de la ventana, porque existe una barra lateral). Sobre ese umbral presentan portada e información en dos columnas.
-3. **Jerarquía tipográfica.** Títulos de pantalla 23 pt, secciones 17–18 pt, títulos de diálogo 19 pt, objeto destacado 14 pt, explicaciones 13 pt y metadatos de 11–12,5 pt. Fondos y texto deben mantener contraste en las cuatro paletas y durante `hover`/selección.
+3. **Jerarquía tipográfica.** Títulos de pantalla 23 pt, secciones 17–18 pt, títulos de diálogo 19 pt, objeto destacado 14 pt, explicaciones 13 pt y metadatos de 11–12,5 pt. Fondos y texto deben mantener contraste en las cinco paletas y durante `hover`/selección.
 4. **Navegación predecible.** Configuración, Nuevo producto y ficha se muestran en el panel principal con una única acción de regreso fija, fuera del scroll. No añadir botones de retorno duplicados. El filtro NSFW utiliza el mismo alto que el resto y un círculo geométrico independiente de métricas de fuente.
-5. **Paletas.** Mostrar **Ónix** (negro/gris), **Jade** (verde original predeterminado), **Amatista** (morado) y **Ámbar** (naranja) en tarjetas completas, sin botones internos ni etiquetas desplazadas. Guardar los IDs estables `graphite`, `sage`, `purple`, `orange` en SQLite: **no renombrarlos** ni migrar datos por cambios de marca. Aplicar el tema inmediatamente y al restaurar.
+5. **Paletas.** Mostrar **Ónix** (negro/gris), **Jade** (verde original predeterminado), **Amatista** (morado) y **Ámbar** (naranja) y **Vice** (morado neón, magenta y atardecer naranja) en tarjetas completas, sin botones internos ni etiquetas desplazadas. Guardar los IDs estables `graphite`, `sage`, `purple`, `orange`, `vice` en SQLite: **no renombrarlos** ni migrar datos por cambios de marca. Aplicar el tema inmediatamente y al restaurar. En Vice dibujar **una única vez por fotograma** el degradado sutil sobre el **rectángulo de la ventana** con `theme::paint_vice_background(ctx)` en la capa de fondo, antes de crear los paneles. Los paneles centrales han de usar `theme::content_panel_fill()` (transparente solo en Vice), y cabecera, barra lateral y barra de estado `theme::chrome_panel_fill()` (veladura oscura semitransparente solo en Vice). Así el atardecer se ve continuo sin rectángulos ni reinicios al cambiar de página. Reservar el rosa para acciones y selección; mantener las tarjetas opacas. **El bloque de Apariencia e idioma debe tener el mismo marco, borde, radio y padding en las cinco paletas**: usar `appearance_settings_frame(colors())` sin condiciones por tema. Solo el color del panel y su borde varían; el degradado es un tratamiento del fondo, no una vista diferente. Conservar intactos los IDs y los demás estilos de las cuatro paletas anteriores. No volver a dibujar gradientes locales dentro de `CentralPanel`.
 6. **Portadas y archivos.** Las tarjetas de imagen deben usar `faint_bg` del tema, no un color fijo. Inspector de ZIP/7z/RAR: con **1–2 entradas** dibujar el contenido directamente dentro del frame, sin un `ScrollArea` que reserve altura vacía; con **3 o más**, altura proporcional al número de entradas (máximo adaptado al viewport) y scroll interno con `min_scrolled_height` y `max_height` iguales para evitar que el scroll exterior lo comprima. Mantener límites de inspección/extracción en segundo plano.
+
+## Paridad de diseño entre paletas
+
+- **La paleta nunca decide qué widgets, vistas, márgenes, anchos, alturas, radios, separadores o contenedores se usan.** Si un panel es necesario, dibujarlo en todas las paletas con idéntica geometría. Las diferencias se limitan a `theme::colors()`, el degradado Vice y superficies cromáticas.
+- `appearance_settings_frame(palette)` centraliza el marco de «Paleta de colores / Idioma» para todos los temas: 18 pt de padding, borde de 1 pt y radio de 12 pt, independientes de la paleta.
+- El selector de paletas utiliza `theme::preview_colors(kind)`, siempre cuatro muestras colocadas igual. Vice puede usar un segundo swatch cálido, pero no un layout especial. La prueba `appearance_geometry_is_identical_across_all_five_themes` verifica los márgenes, bordes y radios.
+- Verificar el cambio de tema con Configuración, biblioteca, ficha de producto, nuevo producto, selección y biblioteca remota, manteniendo la misma estructura visual. Evitar condiciones `ThemeKind::Vice` fuera de `theme.rs` para construir componentes.
+
+## Consistencia visual de controles egui
+
+- La paleta se aplica a los **cinco estados de los widgets** de egui mediante `theme::apply_widget_visuals`: `noninteractive`, `inactive`, `hovered`, `active` y `open`.
+- Un botón normal y un `ComboBox` usan `weak_bg_fill`, no solo `bg_fill`. Ajustar **ambos** fondos y los bordes en el estilo global; no dejar los grises predeterminados de `Visuals::dark()` en botones como «Mostrar más / editar» ni selectores como «Categoría».
+- Mantener las acciones principales (`primary`) diferenciadas de botones secundarios (`button_bg`). Los controles deshabilitados deben seguir identificándose como tales por la opacidad nativa de egui y no activarse por motivos estéticos.
+- Comprobar los desplegables tanto cerrados como abiertos y las cinco paletas, incluido Vice, en Configuración, catálogo, ficha y biblioteca remota.
 
 ## Indicadores de biblioteca
 
 - El encabezado muestra el recuento filtrado y el **peso total de los archivos vinculados** a ese mismo conjunto de productos. Utilizar `Catalog::stats_filtered_visibility` (consulta SQL independiente de la paginación), actualizada en `reload()` cuando cambien filtros o archivos, no sumar exclusivamente las tarjetas ya visibles.
 - No sumar dos veces la misma ruta `stored_path` si varios productos la comparten. Son tamaños registrados en SQLite para archivos externos o gestionados; no equivalen al uso de disco propio de SZKura ni incluyen WebP, caché, SQLite u otros archivos temporales. El tooltip debe aclarar el alcance.
-- Formatear con la función `human_size` ya usada en otros apartados; mantener un texto secundario compacto y coherente con las cuatro paletas.
+- Formatear con la función `human_size` ya usada en otros apartados; mantener un texto secundario compacto y coherente con las cinco paletas.
 
 ## Portadas y rendimiento gráfico
 
@@ -55,6 +69,13 @@
 - **Ficha de producto:** inputs de 36 pt y checkbox NSFW con ancho natural, dentro de `ui.horizontal` para que la casilla y el texto comiencen en el borde izquierdo de los inputs. **No** usar `ui.add_sized([ui.available_width(), ...], Checkbox)` porque centra su contenido en la columna. Descripción y su botón de despliegue comparten ancho de columna. Aplicar las mismas reglas a Nuevo producto.
 - **Resumen de producto:** nunca expandirlo al ancho completo de la columna si la portada está limitada a 480 pt. Usar un sub-UI de ancho exacto al editor de portada y altura dictada por su contenido, con márgenes verticales compactos, recuento de archivos y avatares abreviados (`Avatar: MAYA +N`). Evitar espacios en blanco causados por alturas heredadas de la columna vecina.
 - `ScrollArea` solo donde hay contenido potencialmente largo; títulos, volver y acciones principales deben permanecer localizables. Evitar scrolls anidados salvo visores de archivos que lo requieran.
+
+## Bibliotecas compartidas (lectura remota)
+
+- **Una sola portada:** `ui_support::paint_cover` dibuja imágenes locales y remotas con idéntica geometría de encaje y fondo desenfocado de 64×64. Se descargan por HTTP y se decodifican fuera del hilo de egui; portadas de hasta **32 MiB / 24 MP** como en el catálogo nativo, con texturas limitadas por presupuesto de memoria.
+- **Sin bloqueo en las fichas:** al abrir una ficha remota, primero se consulta y dibuja su manifiesto JSON. La verificación del contenido local con BLAKE3 arranca después, en otro trabajador cancelable, indicando su estado sin impedir navegar o volver.
+- **Diseño común:** misma portada, columna del 40 % hasta 482 pt, tarjeta RESUMEN, campos informativos, sección de archivos y encabezado de 23 pt. Solo cambian los controles: biblioteca remota es de solo lectura y permite importar, no editar ni borrar el host.
+- **Portadas de red:** hasta tres peticiones simultáneas, prioridad para la ficha abierta, reintento manual si hay errores y mensajes distintos para cargando/sin portada/portada no disponible. Mantener pruebas de codificación, tamaños y geometría.
 
 ## Checklist para cada PR de interfaz
 

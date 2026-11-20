@@ -5,8 +5,10 @@ mod cover_cache;
 mod theme;
 mod i18n;
 mod sharing_ui;
+mod library_ui;
 mod startup_diagnostics;
 use sharing_ui::SharingUi;
+use library_ui::LibraryUi;
 use cover_cache::{CoverRequest, CoverResult};
 use theme::{ThemeKind,colors};
 use i18n::{Language,tr};
@@ -54,6 +56,31 @@ impl AppPaths {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CatalogView { Grid, List }
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum SettingsSection {Storage,Appearance,Backup,Sharing,Updates}
+impl SettingsSection {
+    const ALL:[Self;5]=[Self::Storage,Self::Appearance,Self::Backup,
+        Self::Sharing,Self::Updates];
+    fn title(self)->&'static str {
+        match self{
+            Self::Storage=>"Almacenamiento",
+            Self::Appearance=>"Apariencia e idioma",
+            Self::Backup=>"Copia de seguridad",
+            Self::Sharing=>"Compartir biblioteca",
+            Self::Updates=>"Actualizaciones",
+        }
+    }
+}
+
+/// The appearance page must have identical structure in all five palettes.
+/// Keep its margins, border width and corners fixed; vary only palette colors.
+fn appearance_settings_frame(p:theme::Palette)->egui::Frame{
+    egui::Frame::new()
+        .fill(p.panel)
+        .stroke(egui::Stroke::new(1.0,p.stroke))
+        .corner_radius(12)
+        .inner_margin(egui::Margin::symmetric(18,18))
+}
 
 struct JobResult { message:String, select_id:Option<i64> }
 struct JobFinished { message:String, select_id:Option<i64>, ok:bool }
@@ -65,6 +92,28 @@ struct AvatarScanFinished {
     generation: u64,
     source_paths: Vec<PathBuf>,
     report: avatar_detection::ScanResult,
+}
+
+#[cfg(test)]
+mod palette_layout_parity_tests {
+    use super::*;
+
+    #[test]
+    fn appearance_geometry_is_identical_across_all_five_themes(){
+        let reference=appearance_settings_frame(theme::swatches(ThemeKind::Sage));
+        for kind in ThemeKind::ALL {
+            let palette=theme::swatches(kind);
+            let frame=appearance_settings_frame(palette);
+            // No theme may add/remove padding, resize cards or change the
+            // framed content width when users switch appearances.
+            assert_eq!(frame.inner_margin,reference.inner_margin);
+            assert_eq!(frame.outer_margin,reference.outer_margin);
+            assert_eq!(frame.corner_radius,reference.corner_radius);
+            assert_eq!(frame.stroke.width,reference.stroke.width);
+            assert_eq!(frame.fill,palette.panel);
+            assert_eq!(frame.stroke.color,palette.stroke);
+        }
+    }
 }
 
 /// One LRU entry owns its foreground and optional 64px background textures.
@@ -80,6 +129,7 @@ struct BoothApp {
     paths: AppPaths,
     db: Catalog,
     sharing: SharingUi,
+    library_ui:LibraryUi,
     assets: Vec<Asset>,
     total: i64,
     filtered: i64,
@@ -99,6 +149,7 @@ struct BoothApp {
     ui_language: Language,
     configured: bool,
     show_settings: bool,
+    settings_section:SettingsSection,
     setup_path: String,
     delete_sources: bool,
     confirm_new_import: bool,
@@ -149,19 +200,14 @@ impl BoothApp {
         style.visuals=egui::Visuals::dark();
         style.visuals.panel_fill=p.bg;
         style.visuals.window_fill=p.panel;
-        style.visuals.widgets.inactive.bg_fill=p.button_bg;
-        style.visuals.widgets.hovered.bg_fill=p.hover_bg;
-        style.visuals.widgets.active.bg_fill=p.primary;
+        // Centralize ALL native egui controls (including the weak backgrounds
+        // used by ordinary buttons, combo boxes and the open-popup state).
+        theme::apply_widget_visuals(&mut style.visuals,p);
         style.visuals.selection.bg_fill=p.selection;
+        style.visuals.selection.stroke.color=p.text;
         style.visuals.extreme_bg_color=p.extreme_bg;
         style.visuals.faint_bg_color=p.faint_bg;
-        style.visuals.widgets.inactive.fg_stroke.color=p.text;
-        style.visuals.widgets.hovered.fg_stroke.color=p.text;
-        style.visuals.widgets.active.fg_stroke.color=p.text;
-        style.visuals.widgets.inactive.bg_stroke=egui::Stroke::new(1.0,p.stroke);
-        style.visuals.widgets.hovered.bg_stroke=egui::Stroke::new(1.0,p.accent);
         style.visuals.window_stroke=egui::Stroke::new(1.0,p.stroke);
-        style.visuals.widgets.noninteractive.fg_stroke.color=p.text;
         style.text_styles.insert(egui::TextStyle::Body,egui::FontId::proportional(16.0));
         style.text_styles.insert(egui::TextStyle::Button,egui::FontId::proportional(15.0));
         style.text_styles.insert(egui::TextStyle::Heading,egui::FontId::proportional(23.0));
@@ -188,13 +234,14 @@ impl BoothApp {
         i18n::select(ui_language);
         Self::apply_theme(&cc.egui_ctx);
         let mut app=Self {
-            paths,db,sharing:SharingUi::new(sharing_enabled),assets:Vec::new(),total:0,filtered:0,filtered_bytes:0,
+            paths,db,sharing:SharingUi::new(sharing_enabled),library_ui:LibraryUi::new(),assets:Vec::new(),total:0,filtered:0,filtered_bytes:0,
             query:String::new(),category:String::new(),avatar_filter:String::new(),
             avatar_options:Vec::new(),files_filter:FileFilter::All,displayed_limit:96,
             last_filters:(String::new(),String::new(),String::new(),FileFilter::All,false,false),
             favorites_only:false,favorites_dirty:false,show_nsfw:false,
             catalog_view:CatalogView::Grid,ui_palette,ui_language,
-            configured,show_settings:!configured,setup_path:storage
+            configured,show_settings:!configured,
+            settings_section:SettingsSection::Storage,setup_path:storage
                 .as_ref().map(|p|p.display().to_string()).unwrap_or_default(),
             delete_sources,confirm_new_import:false,pending_managed_link:None,
             pending_restore:None,restore_in_flight:false,
@@ -773,9 +820,9 @@ impl BoothApp {
             }
         }
     }
-    /// Opening from SZKura always creates (or reuses) a labeled copy in the
-    /// bounded Unity cache. Never open the untagged source if labeling fails:
-    /// the user explicitly requested that the normal import action tags assets.
+    /// Tag a copy of Unity packages when the archive contains a real folder
+    /// GUID. Some valid packages contain only files: in that case skip labels
+    /// and open the unchanged original. All other export errors still abort.
     fn launch_unity_package(
         &mut self,source:PathBuf,entry:Option<UnityPackage>,id:i64,category:String
     ){
@@ -786,17 +833,24 @@ impl BoothApp {
                 )?
             }else{source};
             let label=unitypackage_labels::label_for_category(&category)?;
-            let tagged=unitypackage_labels::cached_labeled_unitypackage(
+            let prepared=unitypackage_labels::cached_labeled_unitypackage(
                 &original,&paths.unity_cache,&category
             )?;
-            let message=match open_unity_file(&tagged){
+            let message=match open_unity_file(&prepared.path){
+                Ok(()) if prepared.skipped_no_folder=>
+                    "Paquete enviado a Unity sin etiquetas: no incluye una carpeta Unity etiquetable.".into(),
                 Ok(())=>format!("Copia etiquetada enviada a Unity: {label}"),
                 Err(error)=>{
-                    // Unity may be absent or OS associations unavailable. Only
-                    // reveal the labeled copy for importing manually.
-                    let _=reveal_file(&tagged.to_string_lossy());
-                    format!("No se abrió Unity; importa manualmente la copia etiquetada: {} ({error})",
-                        tagged.display())
+                    // Unity may be absent or OS associations unavailable.
+                    // Reveal the prepared file (or original when no folders).
+                    let _=reveal_file(&prepared.path.to_string_lossy());
+                    if prepared.skipped_no_folder {
+                        format!("No se abrió Unity; importa manualmente el paquete sin etiquetas: {} ({error})",
+                            prepared.path.display())
+                    }else{
+                        format!("No se abrió Unity; importa manualmente la copia etiquetada: {} ({error})",
+                            prepared.path.display())
+                    }
                 }
             };
             Ok(JobResult{message,select_id:Some(id)})
@@ -804,6 +858,9 @@ impl BoothApp {
     }
     fn start_new(&mut self) {
         self.cancel_avatar_scan();
+        if self.library_ui.remote_active {
+            self.library_ui.leave_remote();
+        }
         if !self.configured {self.show_settings=true;return;}
         self.selected=None;
         self.inspected_zip=None;self.archive_preview=None;self.archive_scan=None;
@@ -962,33 +1019,10 @@ impl BoothApp {
     /// expand a card and cause the next columns to overlap (alpha.4 layout bug).
     fn draw_cover(&mut self, ui: &mut egui::Ui, ctx: &egui::Context,
                   path: &str, width: f32, height: f32, max_side:u32) {
-        let texture = self.image_for(ctx, path, max_side);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 10.0, colors().faint_bg);
-        if let Some(tex)=texture {
-            if let Some(bg)=&tex.background {
-                // egui Painter::image ignores corner radius. Using Image's
-                // rounded textured shape keeps the blur INSIDE the entire
-                // same rectangle as the foreground (no inset/visible stripes).
-                egui::Image::new((bg.id(),bg.size_vec2()))
-                    .corner_radius(10)
-                    .tint(Color32::from_rgb(210,210,210))
-                    .paint_at(ui,rect);
-                ui.painter().rect_filled(rect,10.0,
-                    Color32::from_black_alpha(45));
-            }
-            let bounds=fitted_cover_rect(rect,tex.foreground.size_vec2());
-            // A small rounded edge on the sharp image also prevents square
-            // corners when a wide cover touches the container's outer edge.
-            egui::Image::new((tex.foreground.id(),tex.foreground.size_vec2()))
-                .corner_radius(4)
-                .paint_at(ui,bounds);
-        } else {
-            ui.painter().text(
-                rect.center(), egui::Align2::CENTER_CENTER, tr("Sin portada"),
-                egui::FontId::proportional(13.0), colors().muted,
-            );
-        }
+        let texture=self.image_for(ctx,path,max_side);
+        ui_support::paint_cover(ui,texture.as_ref().map(|t|&t.foreground),
+            texture.as_ref().and_then(|t|t.background.as_ref()),width,height,
+            tr("Sin portada"));
     }
 
     /// Shared edit/new cover picker. The preview and action share one bounded
@@ -1023,18 +1057,26 @@ impl BoothApp {
     fn header(&mut self,ctx:&egui::Context) {
         let busy=self.receiver.is_some() || self.update_install_rx.is_some();
         egui::TopBottomPanel::top("header")
-            .frame(egui::Frame::new().fill(colors().panel).inner_margin(egui::Margin::symmetric(22,11)))
+            .frame(egui::Frame::new().fill(theme::chrome_panel_fill()).inner_margin(egui::Margin::symmetric(22,11)))
             .show(ctx,|ui|{
                 ui.horizontal(|ui|{
                     icon(ui,Icon::Grid,colors().accent,23.0);
                     ui.add_space(5.0);
                     ui.label(RichText::new(tr("SZKura")).strong().size(23.0).color(colors().text));
                     ui.add_space(15.0);
-                    ui.label(RichText::new(tr("Biblioteca local de assets")).size(13.0).color(colors().muted));
+                    ui.label(RichText::new(tr(if self.library_ui.remote_active{
+                        "ESTÁS EN OTRA BIBLIOTECA · SOLO LECTURA"
+                    }else if self.library_ui.picker_open{
+                        "ELIGE QUÉ COMPARTIR"
+                    }else{"Biblioteca local de assets"}))
+                        .size(13.0)
+                        .color(if self.library_ui.remote_active{colors().accent}else{colors().muted})
+                        .strong());
                     ui.label(RichText::new(updater::installed_version()).size(11.5).color(colors().accent));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                         if busy{ui.spinner();}
-                        if !self.show_settings {
+                        if !self.show_settings && !self.library_ui.remote_active
+                            && !self.library_ui.picker_open {
                             if action(ui,Icon::Folder,"Configuración",false){
                                 self.show_settings=true;
                             }
@@ -1050,7 +1092,21 @@ impl BoothApp {
                     });
                 });
                 self.sharing.active_header(ui);
-                if !self.show_settings && self.selected.is_none() && !self.new_dialog {
+                self.library_ui.active_header(ui);
+                if self.library_ui.remote_active{
+                    ui.add_space(5.0);
+                    ui.label(RichText::new(format!("{} {}",
+                        tr("Explorando biblioteca:"),
+                        self.library_ui.remote_library_name().unwrap_or(tr("Conectar a biblioteca"))))
+                        .size(12.5).color(colors().accent));
+                }
+                if self.library_ui.picker_open {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui|self.library_ui.picker_search(ui));
+                }else if self.library_ui.remote_active && self.library_ui.remote_catalog_open(){
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui|self.library_ui.remote_search(ui));
+                }else if !self.show_settings && self.selected.is_none() && !self.new_dialog {
                     ui.add_space(10.0);
                     ui.horizontal(|ui|{
                         icon(ui,Icon::Search,colors().muted,19.0);
@@ -1071,11 +1127,19 @@ impl BoothApp {
     }
     fn sidebar(&mut self,ctx:&egui::Context) {
         egui::SidePanel::left("sidebar").resizable(false).exact_width(218.0)
-            .frame(egui::Frame::new().fill(colors().panel).inner_margin(egui::Margin::symmetric(14,18)))
+            .frame(egui::Frame::new().fill(theme::chrome_panel_fill()).inner_margin(egui::Margin::symmetric(14,18)))
             .show(ctx,|ui|{
                 egui::ScrollArea::vertical().id_salt("nav-scroll")
                     .auto_shrink([false,false]).show(ui,|ui|{
                         ui.spacing_mut().item_spacing.y=5.0;
+                        if self.library_ui.picker_open {
+                            self.library_ui.picker_sidebar(ui);
+                            return;
+                        }
+                        if self.library_ui.remote_active {
+                            self.library_ui.remote_sidebar(ui);
+                            return;
+                        }
                         ui.label(RichText::new(tr("BIBLIOTECA")).color(colors().accent).strong().size(11.0));
                         ui.add_space(9.0);
                         if self.category_button(ui,"Todos los productos",""){
@@ -1145,6 +1209,16 @@ impl BoothApp {
                             self.selected=None;self.new_dialog=false;
                         }
                         ui.add_space(14.0);
+                        ui.separator();ui.add_space(8.0);
+                        ui.label(RichText::new(tr("BIBLIOTECAS REMOTAS"))
+                            .color(colors().accent).strong().size(11.0));
+                        ui.add_space(4.0);
+                        if nav_choice(ui,"Conectar a biblioteca",false) {
+                            self.library_ui.open_connect();
+                            self.selected=None;
+                            self.new_dialog=false;
+                        }
+                        ui.add_space(13.0);
                         ui.separator();ui.add_space(8.0);
                         ui.label(RichText::new(tr("IMPORTACIÓN")).color(colors().accent).strong().size(11.0));
                         ui.label(RichText::new(tr("Arrastra archivos ZIP, 7z, RAR, UnityPackage o carpetas para vincularlos."))
@@ -1248,7 +1322,7 @@ impl BoothApp {
         let mut inspect_unity:Option<(PathBuf,Option<UnityPackage>)>=None;
         let mut export_labeled:Option<(PathBuf,Option<UnityPackage>)>=None;
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(24,18)))
+            .frame(egui::Frame::new().fill(theme::content_panel_fill()).inner_margin(egui::Margin::symmetric(24,18)))
             .show(ctx,|ui|{
                 let compact_header=ui.available_width()<800.0;
                 ui.horizontal(|ui|{
@@ -1381,7 +1455,7 @@ impl BoothApp {
                                         if direct_package && ui.add_enabled(available && !busy,
                                             egui::Button::new(tr("Abrir en Unity"))
                                                 .min_size(egui::vec2(0.0,34.0)))
-                                            .on_hover_text(tr("Al abrir, se añade automáticamente la etiqueta SZKura en una copia de caché."))
+                                            .on_hover_text(tr("Al abrir, se etiqueta la carpeta incluida si existe; de lo contrario se abre el paquete original sin etiquetas."))
                                             .clicked(){
                                             open_direct=Some(source.clone());
                                         }
@@ -1557,9 +1631,14 @@ impl BoothApp {
                             let report=unitypackage_labels::export_labeled_unitypackage(
                                 &input,&destination,&category)?;
                             Ok(JobResult {
-                                message:format!("{}: {} | {}: {}",
-                                    tr("Copia etiquetada creada"),destination.display(),
-                                    report.label,report.labeled_assets+report.already_labeled),
+                                message:if report.skipped_no_folder {
+                                    format!("Copia creada sin etiquetas (no se incluyeron carpetas Unity): {}",
+                                        destination.display())
+                                }else{
+                                    format!("{}: {} | {}: {}",
+                                        tr("Copia etiquetada creada"),destination.display(),
+                                        report.label,report.labeled_assets+report.already_labeled)
+                                },
                                 select_id:Some(id),
                             })
                         });
@@ -1821,7 +1900,7 @@ impl BoothApp {
     }
 
     fn catalog(&mut self,ctx:&egui::Context) {
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(19,17)))
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::content_panel_fill()).inner_margin(egui::Margin::symmetric(19,17)))
             .show(ctx,|ui|{
                 ui.horizontal(|ui|{
                     ui.label(RichText::new(tr(if self.category.is_empty(){"Tu biblioteca"}else{&self.category}))
@@ -1916,6 +1995,161 @@ impl BoothApp {
                 }
             });
     }
+    /// Reuses the normal catalog's cards, cover decoding and responsive
+    /// virtualized grid; only the contextual action changes to Select.
+    fn library_picker_page(&mut self,ctx:&egui::Context){
+        let indexes=self.library_ui.picker_indices();
+        let count=indexes.len();
+        egui::CentralPanel::default().frame(egui::Frame::new()
+            .fill(theme::content_panel_fill()).inner_margin(egui::Margin::symmetric(19,17)))
+            .show(ctx,|ui|{
+                ui.horizontal_wrapped(|ui|{
+                    if action(ui,Icon::Back,"Volver a configuración",false){
+                        self.library_ui.picker_open=false;
+                    }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(tr("Elegir fichas para compartir"))
+                        .strong().size(23.0).color(colors().text));
+                    ui.label(RichText::new(format!("{} {} · {} {}",
+                        count,tr("productos"),self.library_ui.selection_count(),
+                        tr("seleccionadas"))).color(colors().accent).size(13.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                        if ui.selectable_label(!self.library_ui.picker_grid,tr("Lista")).clicked(){
+                            self.library_ui.picker_grid=false;
+                        }
+                        if ui.selectable_label(self.library_ui.picker_grid,tr("Cuadrícula")).clicked(){
+                            self.library_ui.picker_grid=true;
+                        }
+                    });
+                });
+                self.library_ui.mode_options(ui);
+                ui.label(RichText::new(tr(if self.library_ui.mode_is_exclude(){
+                    "Excluir fichas del catálogo compartido. Las demás se incluirán al iniciar la sesión."
+                }else{
+                    "Marca solo las fichas que deseas incluir en el catálogo compartido."
+                })).size(12.5).color(colors().muted));
+                ui.add_space(9.0);
+                self.library_ui.publication_preview_ui(ui);
+                ui.add_space(12.0);
+                if count==0 {
+                    ui.vertical_centered(|ui|{
+                        ui.add_space(35.0);
+                        if self.library_ui.is_loading_products(){
+                            ui.spinner();
+                            ui.label(tr("Cargando selección de productos..."));
+                        }else{
+                            ui.label(RichText::new(tr("No hay resultados")).size(18.0));
+                            if ui.button(tr("Limpiar filtros")).clicked(){
+                                self.library_ui.reset_picker_filters();
+                            }
+                        }
+                    });
+                    return;
+                }
+                if !self.library_ui.picker_grid {
+                    let compact=ui.available_width()<1020.0;
+                    let height=if compact{136.0}else{96.0};
+                    egui::ScrollArea::vertical().id_salt("share-picker-rows")
+                        .show_rows(ui,height,indexes.len(),|ui,range|{
+                        for index in range{
+                            let Some(asset)=self.library_ui.picker_asset(indexes[index]).cloned()
+                                else{continue};
+                            let chosen=self.library_ui.selected(asset.id);
+                            egui::Frame::new().fill(colors().card).corner_radius(8)
+                                .stroke(egui::Stroke::new(if chosen{2.0}else{1.0},
+                                    if chosen{colors().accent}else{colors().stroke}))
+                                .inner_margin(egui::Margin::symmetric(12,8))
+                                .show(ui,|ui|{
+                                    ui.horizontal(|ui|{
+                                        self.draw_cover(ui,ctx,&asset.image_path,76.0,64.0,160);
+                                        ui.add_space(10.0);
+                                        ui.vertical(|ui|{
+                                            ui.label(RichText::new(&asset.title)
+                                                .strong().size(15.0).color(colors().text));
+                                            ui.label(RichText::new(format!("{} · {}",
+                                                asset.creator,tr(&asset.category)))
+                                                .size(11.5).color(colors().muted));
+                                            if !asset.avatars.is_empty(){
+                                                ui.label(RichText::new(&asset.avatars)
+                                                    .size(11.5).color(colors().accent));
+                                            }
+                                        });
+                                        ui.with_layout(egui::Layout::right_to_left(
+                                            egui::Align::Center),|ui|{
+                                            if ui.add_enabled(!self.library_ui.toggle_disabled(asset.id),
+                                                egui::Button::new(tr(self.library_ui.picker_toggle_label(asset.id))))
+                                                .clicked(){
+                                                self.library_ui.toggle_selected(asset.id);
+                                            }
+                                        });
+                                    });
+                                });
+                        }
+                    });
+                    return;
+                }
+                let space=ui.available_width().max(210.0);
+                let gap=ui.spacing().item_spacing.x;
+                let columns=(((space+gap)/(325.0+gap)).floor() as usize).max(1);
+                let width=((space-gap*(columns-1) as f32)/columns as f32).max(200.0);
+                let rows=count.div_ceil(columns);
+                egui::ScrollArea::vertical().id_salt("share-picker-grid")
+                    .show_rows(ui,330.0,rows,|ui,range|{
+                        for row_index in range {
+                            let first=row_index*columns;
+                            let last=(first+columns).min(count);
+                            let visible:Vec<_>=indexes[first..last].iter()
+                                .filter_map(|i|self.library_ui.picker_asset(*i).cloned()).collect();
+                            ui.horizontal_top(|ui|{
+                                for asset in visible {
+                                    let chosen=self.library_ui.selected(asset.id);
+                                    ui.allocate_ui_with_layout(egui::vec2(width,330.0),
+                                        egui::Layout::top_down(egui::Align::Min),|ui|{
+                                        ui.set_width(width);
+                                        egui::Frame::new().fill(colors().card)
+                                            .stroke(egui::Stroke::new(
+                                                if chosen{2.0}else{1.0},
+                                                if chosen{colors().accent}else{colors().stroke}))
+                                            .corner_radius(12).inner_margin(13).show(ui,|ui|{
+                                                let inner=width-26.0;
+                                                ui.set_width(inner);
+                                                ui.set_min_height(302.0);
+                                                self.draw_cover(ui,ctx,&asset.image_path,inner,170.0,320);
+                                                ui.add_space(9.0);
+                                                ui.add(egui::Label::new(RichText::new(&asset.title)
+                                                    .strong().color(colors().text).size(16.0))
+                                                    .truncate()).on_hover_text(&asset.title);
+                                                ui.label(RichText::new(if asset.creator.is_empty(){
+                                                    tr(&asset.category).to_owned()
+                                                }else{asset.creator.clone()})
+                                                    .size(12.5).color(colors().muted));
+                                                if let Some(label)=avatar_summary(&asset.avatars){
+                                                    ui.label(RichText::new(label)
+                                                        .size(12.0).color(colors().accent));
+                                                }else{ui.add_space(18.0);}
+                                                ui.add_space(6.0);
+                                                ui.horizontal(|ui|{
+                                                    ui.label(RichText::new(format!("{} · {}",
+                                                        asset.attachments,human_size(asset.total_bytes)))
+                                                        .size(12.0).color(colors().muted));
+                                                    ui.with_layout(egui::Layout::right_to_left(
+                                                        egui::Align::Center),|ui|{
+                                                        if ui.add_enabled(!self.library_ui.toggle_disabled(asset.id),
+                                                egui::Button::new(tr(self.library_ui.picker_toggle_label(asset.id))))
+                                                .clicked(){
+                                                            self.library_ui.toggle_selected(asset.id);
+                                                        }
+                                                    });
+                                                });
+                                            });
+                                    });
+                                }
+                            });
+                        }
+                    });
+            });
+    }
+
     /// Same inline layout and fields as the editor. Never creates a floating popup.
     fn settings_page(&mut self,ctx:&egui::Context) {
         let mut choose=false;
@@ -1930,7 +2164,7 @@ impl BoothApp {
         let mut requested_language=None;
         let busy=self.receiver.is_some() || self.update_install_rx.is_some();
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(28,24)))
+            .frame(egui::Frame::new().fill(theme::content_panel_fill()).inner_margin(egui::Margin::symmetric(28,24)))
             .show(ctx,|ui|{
                 ui.horizontal(|ui|{
                     if self.configured {
@@ -1945,9 +2179,34 @@ impl BoothApp {
                 });
                 ui.add_space(8.0);
                 ui.separator();
+                if self.configured {
+                    ui.add_space(10.0);
+                    ui.horizontal_wrapped(|ui|{
+                        for section in SettingsSection::ALL {
+                            if ui.add_sized([if section==SettingsSection::Appearance {
+                                    154.0
+                                }else{137.0},36.0],
+                                egui::Button::new(tr(section.title()))
+                                    .corner_radius(8)
+                                    .fill(if self.settings_section==section {
+                                        colors().card
+                                    }else{colors().panel})
+                                    .stroke(egui::Stroke::new(
+                                        if self.settings_section==section{2.0}else{1.0},
+                                        if self.settings_section==section{
+                                            colors().accent
+                                        }else{colors().stroke}
+                                    ))).clicked(){
+                                self.settings_section=section;
+                            }
+                        }
+                    });
+                }
                 ui.add_space(10.0);
-                egui::ScrollArea::vertical().id_salt("settings-scroll")
+                egui::ScrollArea::vertical()
+                    .id_salt(("settings-scroll",self.settings_section as u8))
                     .auto_shrink([false,false]).show(ui,|ui|{
+                if !self.configured || self.settings_section==SettingsSection::Storage {
                 ui.add_space(8.0);
                 ui.label(RichText::new(tr("Antes de añadir productos o archivos, elige una carpeta para guardar tus assets organizados. Esta ruta se conserva en SQLite.")
                 ).size(14.0).color(colors().text));
@@ -1969,14 +2228,18 @@ impl BoothApp {
                 ).color(colors().muted));
                 ui.label(RichText::new(tr("Al cambiar la carpeta principal, los archivos ya gestionados mantienen sus rutas hasta que uses Organizar existentes.")
                 ).color(colors().muted).size(12.0));
-                ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                }
+                if self.configured && self.settings_section==SettingsSection::Appearance {
+                // Every palette uses EXACTLY the same visual hierarchy,
+                // padding and widget positions; only the frame colors vary.
+                appearance_settings_frame(colors()).show(ui,|ui|{
+                ui.add_space(8.0);
                 ui.label(RichText::new(tr("Paleta de colores")).strong().size(17.0));
                 ui.label(RichText::new(tr("Cambia la apariencia de toda la app. Tu elección se guarda para el siguiente inicio.")
                 ).color(colors().muted).size(12.5));
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui|{
                     for kind in ThemeKind::ALL {
-                        let preview=theme::swatches(kind);
                         let selected=self.ui_palette==kind;
                         let p=colors();
                         // Use one clickable tile per theme with an identical label
@@ -1995,8 +2258,10 @@ impl BoothApp {
                         let swatch_size=17.0;
                         let swatch_gap=8.0;
                         let row_width=4.0*swatch_size+3.0*swatch_gap;
-                        for (index,color) in [preview.bg,preview.card,
-                            preview.primary,preview.accent].into_iter().enumerate() {
+                        // Color differences belong in the palette module;
+                        // all themes use the same preview widget and layout.
+                        let preview_colors=theme::preview_colors(kind);
+                        for (index,color) in preview_colors.into_iter().enumerate() {
                             let x=rect.center().x-row_width*0.5
                                 +index as f32*(swatch_size+swatch_gap);
                             ui.painter().rect_filled(
@@ -2030,7 +2295,10 @@ impl BoothApp {
                 ).color(colors().muted).size(12.0));
                 ui.hyperlink_to(tr("Solicitar otro idioma"),
                     "https://github.com/ShxwZ/SZKura/issues/new");
-                ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                });
+                }
+                if self.configured && self.settings_section==SettingsSection::Backup {
+                ui.add_space(8.0);
                 ui.label(RichText::new(tr("Copia de seguridad de la biblioteca"))
                     .strong().size(17.0));
                 ui.label(RichText::new(tr("Exporta o importa SQLite y las portadas locales. Los archivos originales no se incluyen: se conservan como archivos externos en sus carpetas.")
@@ -2047,10 +2315,15 @@ impl BoothApp {
                 });
                 ui.label(RichText::new(tr("Antes de importar, SZKura guarda automáticamente una copia de recuperación de tu SQLite actual.")
                 ).color(colors().muted).size(11.5));
+                }
+                if self.configured && self.settings_section==SettingsSection::Sharing {
+                self.library_ui.settings_ui(ui,&self.paths.db,
+                    self.paths.db.parent().unwrap_or(Path::new(".")));
                 ui.add_space(18.0);ui.separator();ui.add_space(8.0);
                 self.sharing.settings_ui(ui,&mut self.db,
                     self.paths.db.parent().unwrap_or(Path::new(".")));
-                ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                }
+                if self.configured && self.settings_section==SettingsSection::Updates {
                 ui.label(RichText::new(tr("Versión y actualizaciones")).strong().size(17.0));
                 ui.horizontal_wrapped(|ui|{
                     ui.label(RichText::new(format!("{} {}",tr("Versión instalada:"),
@@ -2104,8 +2377,9 @@ impl BoothApp {
                         human_size(total as i64)
                     )));
                 }
-                if self.configured {
-                    ui.add_space(18.0);ui.separator();ui.add_space(8.0);
+                }
+                if self.configured && self.settings_section==SettingsSection::Storage {
+                    ui.add_space(20.0);ui.separator();ui.add_space(9.0);
                     ui.label(RichText::new(tr("Organizar archivos antiguos")).strong().size(17.0));
                     ui.label(RichText::new(tr("Copia al almacén actual los ZIP vinculados de versiones anteriores, verifica sus hashes y actualiza sus rutas. No borra los originales.")
                     ).color(colors().muted).size(12.5));
@@ -2271,7 +2545,7 @@ impl BoothApp {
         let busy=self.receiver.is_some();
         let(mut back,mut submit,mut choose_cover)=(false,false,false);
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(colors().bg).inner_margin(egui::Margin::symmetric(24,18)))
+            .frame(egui::Frame::new().fill(theme::content_panel_fill()).inner_margin(egui::Margin::symmetric(24,18)))
             .show(ctx,|ui|{
                 let compact_header=ui.available_width()<700.0;
                 ui.horizontal(|ui|{
@@ -2393,14 +2667,26 @@ impl BoothApp {
 
 impl eframe::App for BoothApp {
     fn update(&mut self,ctx:&egui::Context,_frame:&mut eframe::Frame) {
+        // Paint once behind all root panels in the same window coordinates.
+        // Vice alone uses translucent chrome / transparent content frames.
+        theme::paint_vice_background(ctx);
         self.poll_updates(ctx);
         self.process_finished(ctx);
+        self.library_ui.set_product_share_busy(self.sharing.product_share_busy());
+        self.sharing.set_library_share_busy(self.library_ui.host_busy());
         if let Some(result)=self.sharing.poll(ctx) {
             match result {
                 Ok(id)=>{let _=self.reload();self.select_id(id);
                     self.status="Ficha transferida e importada correctamente".into();},
                 Err(error)=>self.status=format!("Error en transferencia: {error}"),
             }
+        }
+        if let Some(imported_id)=self.library_ui.poll(ctx){
+            if let Err(err)=self.reload(){self.status=format!("Error: {err}");}
+            self.select_id(imported_id);
+            self.show_settings=false;
+            self.new_dialog=false;
+            self.status=tr("Ficha añadida a mi biblioteca.").into();
         }
         self.poll_archive_scan();
         self.poll_avatar_scan(ctx);
@@ -2412,11 +2698,13 @@ impl eframe::App for BoothApp {
                 self.status=format!("Error actualizando favoritos: {error}");
             }
         }
-        if !self.show_settings && self.configured {
+        if !self.show_settings && self.configured && !self.library_ui.remote_active {
             self.handle_dropped_files(ctx);
         }
         self.header(ctx);
-        if self.configured && !self.show_settings {self.sidebar(ctx);}
+        if self.configured && (!self.show_settings || self.library_ui.picker_open){
+            self.sidebar(ctx);
+        }
         // Apply sidebar visibility changes before painting the catalog:
         // unchecking NSFW must not leave hidden products visible for one frame.
         if (self.query.clone(),self.category.clone(),self.avatar_filter.clone(),
@@ -2425,7 +2713,7 @@ impl eframe::App for BoothApp {
             if let Err(e)=self.reload(){self.status=format!("Error de filtros: {e}");}
         }
         egui::TopBottomPanel::bottom("status")
-            .frame(egui::Frame::new().fill(colors().panel).inner_margin(egui::Margin::symmetric(18,8)))
+            .frame(egui::Frame::new().fill(theme::chrome_panel_fill()).inner_margin(egui::Margin::symmetric(18,8)))
             .show(ctx,|ui|{
                 let color=if self.status.starts_with("Error")||self.status.starts_with("No se"){
                     Color32::from_rgb(242,157,145)
@@ -2436,7 +2724,11 @@ impl eframe::App for BoothApp {
                     .on_hover_text(visible_status.to_string());
             });
         // Exactly one CentralPanel, replacing the old floating create/edit windows.
-        if !self.configured || self.show_settings {self.settings_page(ctx);}
+        if self.library_ui.picker_open {self.library_picker_page(ctx);}
+        else if !self.configured || self.show_settings {self.settings_page(ctx);}
+        else if self.library_ui.remote_active {
+            self.library_ui.page(ctx,&self.paths.db,&self.paths.library,&self.paths.covers);
+        }
         else if self.new_dialog{self.new_product_window(ctx);}
         else if self.selected.is_some(){self.detail(ctx);}
         else{self.catalog(ctx);}
@@ -2446,6 +2738,12 @@ impl eframe::App for BoothApp {
         self.confirm_restore_dialog(ctx);
         self.sharing.render(ctx,self.paths.db.parent().unwrap_or(Path::new(".")),
             &self.paths.db,&self.paths.library,&self.paths.covers);
+        self.library_ui.render_consent(ctx,&self.paths.db,
+            self.paths.db.parent().unwrap_or(Path::new(".")));
+        // The remote import button schedules a confirmation; without this
+        // shared modal the action would never start any downloads.
+        self.library_ui.render_import_confirm(ctx,&self.paths.db,
+            &self.paths.library,&self.paths.covers);
         if let Some(id)=self.sharing.take_navigation() {
             // Navigate through the existing product selector so the editor
             // loads the correct details, cover and attachment state.
@@ -2461,15 +2759,9 @@ impl eframe::App for BoothApp {
 /// Fit the sharp cover exactly inside the blurred background without
 /// cropping or stretching. For tall covers the sharp image now reaches both
 /// vertical edges; the blurred backdrop only fills the empty sidebars.
-fn fitted_cover_rect(frame:egui::Rect,natural:egui::Vec2)->egui::Rect {
-    if natural.x<=0.0 || natural.y<=0.0 {
-        return egui::Rect::from_center_size(frame.center(),egui::Vec2::ZERO);
-    }
-    let factor=(frame.width()/natural.x)
-        .min(frame.height()/natural.y)
-        .min(1.0)
-        .max(0.0);
-    egui::Rect::from_center_size(frame.center(),natural*factor)
+#[cfg(test)]
+fn fitted_cover_rect(frame:egui::Rect,natural:egui::Vec2)->egui::Rect{
+    ui_support::fitted_cover_rect(frame,natural)
 }
 
 /// Reserve a bounded cover column and let the form use the remaining width.
@@ -2728,7 +3020,7 @@ fn show_unity_paths_result(
                     }
                     if let Ok(unity_label)=unitypackage_labels::label_for_category(category) {
                         ui.add_space(6.0);
-                        ui.label(RichText::new(tr("Al abrir en Unity desde SZKura, se etiqueta solo la primera carpeta del paquete o la primera subcarpeta disponible."))
+                        ui.label(RichText::new(tr("Al abrir en Unity, se etiqueta la primera carpeta incluida; si no existe ninguna, se omite el etiquetado y se abre el paquete original."))
                             .size(12.0).color(colors().text));
                         ui.label(RichText::new(tr("La etiqueta de carpeta no se hereda por los archivos internos en Unity."))
                             .size(12.0).color(colors().muted));
@@ -2740,7 +3032,7 @@ fn show_unity_paths_result(
                                 .size(12.0).color(colors().accent));
                             if ui.add_enabled(can_export,egui::Button::new(
                                 tr("Exportar copia etiquetada...")))
-                                .on_hover_text(tr("Conserva GUIDs, rutas y demás etiquetas; importar manualmente en Unity."))
+                                .on_hover_text(tr("Conserva GUIDs, rutas y demás etiquetas. Sin carpetas Unity, exporta una copia sin nuevas etiquetas."))
                                 .clicked() {
                                 export_requested=true;
                             }
